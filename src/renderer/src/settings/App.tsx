@@ -274,6 +274,12 @@ export default function App(): JSX.Element {
             onChange={(v) => update('featureRecordAudio', v)}
           />
           <Toggle
+            label="Record full meeting video (screen + audio)"
+            hint="Saves the shared screen + mixed audio as a .webm video. Larger file (~50 MB / 30 min at 720p). Nothing uploaded."
+            value={settings.featureRecordVideo}
+            onChange={(v) => update('featureRecordVideo', v)}
+          />
+          <Toggle
             label="Save transcript after call (.md)"
             hint="Saves a markdown transcript with speaker labels and timestamps."
             value={settings.featureSaveTranscript}

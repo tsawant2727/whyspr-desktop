@@ -87,7 +87,8 @@ export default function App(): JSX.Element {
       audioRef.current = await startAudioCapture({
         onSystemChunk: (chunk) => window.api.session.sendSystemAudio(chunk),
         onMicChunk: (chunk) => window.api.session.sendMicAudio(chunk),
-        recordAudio: !!s?.featureRecordAudio
+        recordAudio: !!s?.featureRecordAudio,
+        recordVideo: !!s?.featureRecordVideo
       })
       setActive(true)
     } catch (err: any) {
@@ -138,7 +139,8 @@ export default function App(): JSX.Element {
     }
   }
 
-  const recording = active && !!settings?.featureRecordAudio
+  const recordingVideo = active && !!settings?.featureRecordVideo
+  const recording = active && (!!settings?.featureRecordAudio || recordingVideo)
   const liveSuggestionsEnabled = settings?.featureLiveSuggestions ?? true
   const hasLlmKey =
     !!settings &&
@@ -163,7 +165,7 @@ export default function App(): JSX.Element {
             {recording && (
               <span className="flex items-center gap-1 text-[10px] font-bold text-red-400 ml-1">
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-                REC
+                {recordingVideo ? 'REC •VIDEO' : 'REC'}
               </span>
             )}
           </div>
@@ -254,7 +256,7 @@ export default function App(): JSX.Element {
                   onClick={() => window.api.storage.openFile(lastCallArtifacts.recordingPath!)}
                   className="text-white/80 hover:text-white underline"
                 >
-                  🎙 Recording
+                  {settings?.featureRecordVideo ? '🎬 Video' : '🎙 Recording'}
                 </button>
               )}
               {lastCallArtifacts.transcriptTxtPath && (

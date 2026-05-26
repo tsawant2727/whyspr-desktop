@@ -13,6 +13,7 @@ export type AppSettings = {
   // Feature toggles — each user picks what they need
   featureLiveSuggestions: boolean
   featureRecordAudio: boolean
+  featureRecordVideo: boolean // captures screen + audio together (.webm)
   featureSaveTranscript: boolean
   featureGenerateSummary: boolean
   // Speaker labels (configurable per use case)
@@ -87,6 +88,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   suggestionTriggerSilenceMs: 1500,
   featureLiveSuggestions: true,
   featureRecordAudio: false,
+  featureRecordVideo: false,
   featureSaveTranscript: false,
   featureGenerateSummary: false,
   speakerLabelMe: 'You',

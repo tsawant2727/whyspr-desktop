@@ -8,22 +8,27 @@ export type AudioCaptureCallbacks = {
   onSystemChunk: (chunk: ArrayBuffer) => void // patient (other side of call)
   onMicChunk: (chunk: ArrayBuffer) => void // sales rep (me)
   recordAudio?: boolean
+  recordVideo?: boolean // capture screen + audio together
 }
 
 /**
  * Captures system audio (other side voice) and microphone audio (your voice)
- * as SEPARATE STT streams. Optionally also records a MIXED Opus/WebM blob
- * for local storage when recordAudio=true.
+ * as SEPARATE STT streams. Optionally also records a MIXED blob for local
+ * storage — audio-only WebM/Opus by default, or video+audio WebM when
+ * recordVideo=true.
  */
 export async function startAudioCapture(
   callbacks: AudioCaptureCallbacks
 ): Promise<AudioCaptureHandle> {
+  const wantVideo = !!callbacks.recordVideo
   const systemStream = await navigator.mediaDevices.getDisplayMedia({
     audio: true,
     video: true
   })
 
-  systemStream.getVideoTracks().forEach((t) => t.stop())
+  if (!wantVideo) {
+    systemStream.getVideoTracks().forEach((t) => t.stop())
+  }
 
   const sysTracks = systemStream.getAudioTracks()
   if (sysTracks.length === 0) {
@@ -60,12 +65,14 @@ export async function startAudioCapture(
     callbacks.onMicChunk
   )
 
-  // Optional recording: mix mic + system into a single MediaStream and record
+  // Optional recording: mix mic + system audio (and optionally video) into a
+  // single MediaStream and record it.
   let recorder: MediaRecorder | null = null
   const recordingChunks: Blob[] = []
-  let recordedMimeType = 'audio/webm'
+  let recordedMimeType = wantVideo ? 'video/webm' : 'audio/webm'
+  const wantRecording = wantVideo || !!callbacks.recordAudio
 
-  if (callbacks.recordAudio) {
+  if (wantRecording) {
     try {
       const sysSourceForRec = audioCtx.createMediaStreamSource(
         new MediaStream([sysTracks[0]])
@@ -84,25 +91,49 @@ export async function startAudioCapture(
       const dest = audioCtx.createMediaStreamDestination()
       mixer.connect(dest)
 
-      const candidates = [
+      const videoTrack = wantVideo ? systemStream.getVideoTracks()[0] : null
+      if (wantVideo && !videoTrack) {
+        console.warn('[recording] recordVideo requested but no video track — falling back to audio-only')
+      }
+      const recordingStream = videoTrack
+        ? new MediaStream([videoTrack, ...dest.stream.getAudioTracks()])
+        : dest.stream
+
+      const audioCandidates = [
         'audio/webm;codecs=opus',
         'audio/webm',
         'audio/ogg;codecs=opus',
         'audio/mp4'
       ]
+      const videoCandidates = [
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm;codecs=h264,opus',
+        'video/webm',
+        'video/mp4'
+      ]
+      const candidates = videoTrack ? videoCandidates : audioCandidates
       const supported = candidates.find((c) => MediaRecorder.isTypeSupported(c))
       if (!supported) {
         console.warn('[recording] no supported MediaRecorder mimeType — recording disabled')
       } else {
         recordedMimeType = supported
-        recorder = new MediaRecorder(dest.stream, {
+        const recorderOpts: MediaRecorderOptions = {
           mimeType: supported,
           audioBitsPerSecond: 64000
-        })
+        }
+        if (videoTrack) {
+          // ~1.5 Mbps gives decent 720p quality at manageable file size
+          recorderOpts.videoBitsPerSecond = 1_500_000
+        }
+        recorder = new MediaRecorder(recordingStream, recorderOpts)
         recorder.ondataavailable = (e) => {
           if (e.data && e.data.size > 0) recordingChunks.push(e.data)
         }
         recorder.start(1000) // emit chunks every 1s
+        console.log(
+          `[recording] started ${videoTrack ? 'video+audio' : 'audio'} (${supported})`
+        )
       }
     } catch (err) {
       console.error('[recording] setup failed', err)
