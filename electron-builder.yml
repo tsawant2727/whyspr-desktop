@@ -1,0 +1,44 @@
+appId: com.whyspr.app
+productName: Whyspr
+directories:
+  buildResources: build
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+asarUnpack:
+  - resources/**
+mac:
+  category: public.app-category.business
+  target:
+    - dmg
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    NSMicrophoneUsageDescription: 'Whyspr needs microphone access to transcribe your voice during meetings.'
+    NSCameraUsageDescription: 'Not used; required by Electron screen capture.'
+    NSScreenCaptureUsageDescription: 'Whyspr captures system audio to transcribe the other side of your meeting.'
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+linux:
+  category: Office
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
+  synopsis: Real-time AI sales copilot for medical TC follow-up calls
+  description: |
+    CMA Sales Copilot listens to your video calls and suggests real-time replies
+    based on what the patient is saying. Customizable AI prompt for your sales playbook.
+publish:
+  provider: generic
+  url: https://example.com/auto-updates
