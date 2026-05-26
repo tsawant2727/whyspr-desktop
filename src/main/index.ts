@@ -53,10 +53,24 @@ function buildTray(): void {
   tray.setContextMenu(menu)
 }
 
+function broadcastSettings(settings: ReturnType<typeof getSettings>): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('settings:updated', settings)
+  }
+}
+
 function registerIpc(): void {
   ipcMain.handle('settings:get', () => getSettings())
-  ipcMain.handle('settings:set', (_e, patch) => updateSettings(patch))
-  ipcMain.handle('settings:apply-template', (_e, templateId: string) => applyTemplate(templateId))
+  ipcMain.handle('settings:set', (_e, patch) => {
+    const next = updateSettings(patch)
+    broadcastSettings(next)
+    return next
+  })
+  ipcMain.handle('settings:apply-template', (_e, templateId: string) => {
+    const next = applyTemplate(templateId)
+    broadcastSettings(next)
+    return next
+  })
   ipcMain.handle('settings:open', () => {
     openSettingsWindow()
   })

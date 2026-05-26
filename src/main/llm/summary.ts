@@ -39,6 +39,7 @@ export async function generateSummary(opts: {
   transcript: TranscriptSegment[]
   meLabel: string
   themLabel: string
+  baseURL?: string // for custom OpenAI-compatible endpoints
 }): Promise<string> {
   const conversation = opts.transcript
     .filter((s) => s.isFinal)
@@ -51,8 +52,11 @@ export async function generateSummary(opts: {
 
   const userPrompt = `Here is the call transcript:\n\n${conversation}\n\nPlease summarize it in the format specified.`
 
-  if (opts.provider === 'openai') {
-    const client = new OpenAI({ apiKey: opts.apiKey })
+  if (opts.provider === 'openai' || opts.provider === 'custom') {
+    const client = new OpenAI({
+      apiKey: opts.apiKey || 'not-required',
+      baseURL: opts.baseURL
+    })
     const completion = await client.chat.completions.create({
       model: opts.model,
       max_tokens: 1500,
@@ -62,7 +66,7 @@ export async function generateSummary(opts: {
       ]
     })
     const text = completion.choices?.[0]?.message?.content
-    if (!text) throw new Error('No text response from OpenAI')
+    if (!text) throw new Error('No text response from OpenAI-compatible API')
     return text
   }
 

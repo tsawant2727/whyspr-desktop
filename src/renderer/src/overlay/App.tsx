@@ -20,13 +20,21 @@ export default function App(): JSX.Element {
   const [finalizing, setFinalizing] = useState(false)
   const [lastCallArtifacts, setLastCallArtifacts] = useState<CallArtifacts | null>(null)
   const [showTranscript, setShowTranscript] = useState(false)
+  const [showNotes, setShowNotes] = useState(false)
+  const [notesDraft, setNotesDraft] = useState('')
   const [transcript, setTranscript] = useState<TranscriptSegment[]>([])
   const [interim, setInterim] = useState<TranscriptSegment | null>(null)
   const audioRef = useRef<AudioCaptureHandle | null>(null)
   const transcriptEndRef = useRef<HTMLDivElement | null>(null)
+  const notesSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    void window.api.settings.get().then(setSettings)
+    void window.api.settings.get().then((s) => {
+      setSettings(s)
+      // Honor the "Show live transcript" essential toggle from Settings on first load.
+      if (s?.featureShowTranscript) setShowTranscript(true)
+      setNotesDraft(s?.userNotes ?? '')
+    })
 
     const off1 = window.api.on.transcript((seg) => {
       if (seg.isFinal) {
@@ -49,10 +57,23 @@ export default function App(): JSX.Element {
       setActive(s.active)
       if (s.error) setError(s.error)
     })
+    const off4 = window.api.on.settingsChanged((s) => {
+      setSettings(s)
+      // Keep the live transcript toggle in sync with the Settings essential toggle.
+      setShowTranscript(!!s.featureShowTranscript)
+      // Sync notes draft only if the panel is closed — avoid yanking text from
+      // under the user while they're typing.
+      setShowNotes((isOpen) => {
+        if (!isOpen) setNotesDraft(s.userNotes ?? '')
+        return isOpen
+      })
+    })
     return () => {
       off1()
       off2()
       off3()
+      off4()
+      if (notesSaveTimerRef.current) clearTimeout(notesSaveTimerRef.current)
     }
   }, [])
 
@@ -133,9 +154,19 @@ export default function App(): JSX.Element {
     void window.api.session.requestSuggestion()
   }
 
+  // Debounced notes save: keep typing fluid, flush to backend 500ms after
+  // the user stops typing.
+  function handleNotesChange(value: string): void {
+    setNotesDraft(value)
+    if (notesSaveTimerRef.current) clearTimeout(notesSaveTimerRef.current)
+    notesSaveTimerRef.current = setTimeout(() => {
+      void window.api.settings.set({ userNotes: value })
+    }, 500)
+  }
+
   function handleCopySuggestion(): void {
     if (suggestion?.text) {
-      navigator.clipboard.writeText(suggestion.text).catch(() => undefined)
+      navigator.clipboard.writeText(stripPreamble(suggestion.text)).catch(() => undefined)
     }
   }
 
@@ -144,14 +175,21 @@ export default function App(): JSX.Element {
   const liveSuggestionsEnabled = settings?.featureLiveSuggestions ?? true
   const hasLlmKey =
     !!settings &&
-    (settings.llmProvider === 'openai' ? !!settings.openaiApiKey : !!settings.anthropicApiKey)
+    (settings.llmProvider === 'custom'
+      ? !!settings.customBaseUrl
+      : settings.llmProvider === 'openai'
+        ? !!settings.openaiApiKey
+        : !!settings.anthropicApiKey)
+  const hasSttKey =
+    !!settings &&
+    (settings.sttProvider === 'groq' ? !!settings.groqApiKey : !!settings.deepgramApiKey)
   const needsSetup =
-    !!settings && (!settings.deepgramApiKey || !hasLlmKey || !settings.activeTemplateId)
-  const canStart = !!settings && !!settings.deepgramApiKey
+    !!settings && (!hasSttKey || !hasLlmKey || !settings.activeTemplateId)
+  const canStart = !!settings && hasSttKey
 
   return (
     <div className="h-full w-full p-3">
-      <div className="h-full w-full flex flex-col rounded-2xl bg-panel backdrop-blur-xl border border-white/10 shadow-2xl overflow-hidden">
+      <div className="relative h-full w-full flex flex-col rounded-2xl bg-panel backdrop-blur-xl border border-white/10 shadow-2xl overflow-hidden">
         <header className="draggable flex items-center justify-between px-5 py-3 border-b border-white/10">
           <div className="flex items-center gap-2.5">
             <span
@@ -170,6 +208,11 @@ export default function App(): JSX.Element {
             )}
           </div>
           <div className="no-drag flex items-center gap-1.5">
+            <NotesToggle
+              on={showNotes}
+              hasNotes={notesDraft.trim().length > 0}
+              onChange={setShowNotes}
+            />
             <TranscriptToggle
               on={showTranscript}
               onChange={setShowTranscript}
@@ -230,12 +273,19 @@ export default function App(): JSX.Element {
               <li className={settings?.activeTemplateId ? 'line-through opacity-50' : ''}>
                 Pick a template (sales / support / interview / etc.)
               </li>
-              <li className={settings?.deepgramApiKey ? 'line-through opacity-50' : ''}>
-                Add your Deepgram API key (free $200 credit)
+              <li className={hasSttKey ? 'line-through opacity-50' : ''}>
+                Add your {settings?.sttProvider === 'groq' ? 'Groq' : 'Deepgram'} API key (for
+                transcription)
               </li>
               <li className={hasLlmKey ? 'line-through opacity-50' : ''}>
-                Add your {settings?.llmProvider === 'openai' ? 'OpenAI' : 'Anthropic'} API key (for
-                AI suggestions)
+                Add your{' '}
+                {settings?.llmProvider === 'custom'
+                  ? 'endpoint URL'
+                  : settings?.llmProvider === 'openai'
+                    ? 'OpenAI'
+                    : 'Anthropic'}{' '}
+                {settings?.llmProvider === 'custom' ? '(Ollama / LM Studio)' : 'API key'} (for AI
+                suggestions)
               </li>
             </ol>
             <button
@@ -351,7 +401,11 @@ export default function App(): JSX.Element {
         )}
 
         {showTranscript && (
-          <section className="no-drag flex-[2] flex flex-col overflow-hidden border-t border-white/10">
+          <section
+            className={`no-drag flex flex-col overflow-hidden ${
+              liveSuggestionsEnabled ? 'flex-[2] border-t border-white/10' : 'flex-1'
+            }`}
+          >
             <div className="flex items-center justify-between px-5 pt-3 pb-2 shrink-0">
               <span className="text-xs uppercase tracking-wider text-white/50 font-semibold">
                 Transcript
@@ -388,8 +442,106 @@ export default function App(): JSX.Element {
             </div>
           </section>
         )}
+
+        {!liveSuggestionsEnabled && !showTranscript && (
+          <section className="no-drag flex-1 flex flex-col items-center justify-center px-8 py-10 text-center">
+            <div className="text-4xl mb-3 opacity-50">🌙</div>
+            <div className="text-sm font-semibold text-white/70 mb-1">Nothing turned on</div>
+            <p className="text-xs text-white/40 max-w-xs mb-4 leading-relaxed">
+              Enable <span className="text-white/70">Live AI suggestions</span> or{' '}
+              <span className="text-white/70">Show live transcript</span> in Settings to see content
+              here.
+            </p>
+            <button
+              onClick={() => window.api.settings.open()}
+              className="text-xs bg-accent/90 hover:bg-accent text-black px-3 py-1.5 rounded-full font-medium"
+            >
+              Open Settings
+            </button>
+          </section>
+        )}
+
+        {/* Slide-in notes panel — covers overlay content from the left when open */}
+        <div
+          className={`absolute inset-y-0 left-0 w-full flex flex-col bg-panel/95 backdrop-blur-xl border-r border-white/10 transition-transform duration-200 ease-out z-20 ${
+            showNotes ? 'translate-x-0' : '-translate-x-full'
+          }`}
+        >
+          <div className="flex items-center justify-between px-5 py-3 border-b border-white/10 shrink-0">
+            <div className="flex items-center gap-2">
+              <span className="text-base">📝</span>
+              <span className="text-sm font-semibold tracking-wide">Notes</span>
+              <span className="text-[10px] uppercase tracking-wider text-white/40">
+                pre-meeting cheat sheet
+              </span>
+            </div>
+            <button
+              onClick={() => setShowNotes(false)}
+              className="text-white/60 hover:text-white hover:bg-white/10 rounded w-6 h-6 flex items-center justify-center text-base leading-none"
+              title="Close notes"
+            >
+              ×
+            </button>
+          </div>
+          <div className="flex-1 flex flex-col px-5 py-4 gap-2 overflow-hidden">
+            <textarea
+              value={notesDraft}
+              onChange={(e) => handleNotesChange(e.target.value)}
+              placeholder={
+                'Write talking points, prices, names, key facts here.\n\nExample:\n• Patient — knee surgery, Mr. Sharma, ₹3.5L budget\n• Mention free transport + hotel\n• Hospital: Fortis Bangalore, Dr. Vasu — 25+ years\n• If price objection → offer EMI 12 months'
+              }
+              className="flex-1 w-full bg-white/[0.04] border border-white/10 rounded-lg p-3 text-sm leading-relaxed focus:border-accent outline-none resize-none placeholder:text-white/30"
+              autoFocus
+            />
+            <div className="flex items-center justify-between text-[10px] text-white/40">
+              <span>Auto-saves while you type. Private — AI does not see this.</span>
+              <span>{notesDraft.length} chars</span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
+  )
+}
+
+function NotesToggle({
+  on,
+  hasNotes,
+  onChange
+}: {
+  on: boolean
+  hasNotes: boolean
+  onChange: (v: boolean) => void
+}): JSX.Element {
+  return (
+    <button
+      onClick={() => onChange(!on)}
+      title={on ? 'Close notes' : 'Open notes'}
+      className={`relative flex items-center justify-center w-7 h-7 rounded-md transition-colors ${
+        on
+          ? 'bg-accent2/20 text-accent2 hover:bg-accent2/30'
+          : 'text-white/50 hover:text-white hover:bg-white/10'
+      }`}
+    >
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <polyline points="14 2 14 8 20 8" />
+        <line x1="9" y1="13" x2="15" y2="13" />
+        <line x1="9" y1="17" x2="13" y2="17" />
+      </svg>
+      {hasNotes && !on && (
+        <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-accent2" />
+      )}
+    </button>
   )
 }
 
@@ -404,20 +556,24 @@ function TranscriptToggle({
     <button
       onClick={() => onChange(!on)}
       title={on ? 'Hide live transcript' : 'Show live transcript'}
-      className="flex items-center gap-1.5 text-[10px] text-white/60 hover:text-white px-2 py-1 rounded hover:bg-white/10"
+      className={`flex items-center justify-center w-7 h-7 rounded-md transition-colors ${
+        on
+          ? 'bg-accent/20 text-accent hover:bg-accent/30'
+          : 'text-white/50 hover:text-white hover:bg-white/10'
+      }`}
     >
-      <span className="uppercase tracking-wider font-semibold">Transcript</span>
-      <span
-        className={`relative inline-block w-7 h-3.5 rounded-full transition-colors ${
-          on ? 'bg-accent' : 'bg-white/15'
-        }`}
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       >
-        <span
-          className={`absolute top-0.5 w-2.5 h-2.5 rounded-full bg-white transition-transform ${
-            on ? 'translate-x-3.5' : 'translate-x-0.5'
-          }`}
-        />
-      </span>
+        <path d="M4 6h16M4 12h10M4 18h16" />
+      </svg>
     </button>
   )
 }
@@ -451,6 +607,7 @@ function TranscriptLine({
 
 function PreviousSuggestion({ suggestion }: { suggestion: Suggestion }): JSX.Element {
   const ageS = Math.max(1, Math.round((Date.now() - suggestion.createdAtMs) / 1000))
+  const cleaned = stripPreamble(suggestion.text)
   return (
     <div className="rounded-lg bg-white/5 border border-white/10 p-3 text-sm leading-relaxed text-white/70">
       <div className="flex items-center justify-between mb-1">
@@ -458,13 +615,13 @@ function PreviousSuggestion({ suggestion }: { suggestion: Suggestion }): JSX.Ele
           {ageS}s ago
         </span>
         <button
-          onClick={() => navigator.clipboard.writeText(suggestion.text).catch(() => undefined)}
+          onClick={() => navigator.clipboard.writeText(cleaned).catch(() => undefined)}
           className="text-[10px] text-white/40 hover:text-white px-1.5 py-0.5 rounded hover:bg-white/10"
         >
           Copy
         </button>
       </div>
-      <div className="whitespace-pre-wrap">{suggestion.text}</div>
+      <div className="whitespace-pre-wrap">{cleaned}</div>
     </div>
   )
 }
@@ -505,9 +662,21 @@ function SuggestionBox({
  * Renders suggestion text with markdown-aware code block + inline code styling.
  * Triple-backtick blocks become monospace boxes; rest is normal prose.
  */
+/**
+ * Strip common preambles the model sometimes prepends despite the prompt
+ * telling it not to ("Reply:", "You could say:", "Here's a reply:", etc).
+ */
+function stripPreamble(text: string): string {
+  return text.replace(
+    /^\s*(reply|response|suggested reply|suggestion|you could say|you can say|here'?s? (a |the )?(reply|response|suggestion))\s*[:\-—]\s*/i,
+    ''
+  )
+}
+
 function RichSuggestionContent({ text }: { text: string }): JSX.Element {
+  const cleaned = stripPreamble(text)
   // Split on ```...``` code fences while keeping them
-  const parts = text.split(/(```[\s\S]*?```)/g)
+  const parts = cleaned.split(/(```[\s\S]*?```)/g)
   return (
     <>
       {parts.map((part, i) => {

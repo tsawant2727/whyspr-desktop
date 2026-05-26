@@ -1,5 +1,6 @@
 import { BrowserWindow } from 'electron'
 import { DeepgramStreamingClient } from './stt/deepgram'
+import { GroqWhisperClient } from './stt/groq'
 import { ClaudeSuggestionClient } from './llm/claude'
 import { OpenAISuggestionClient } from './llm/openai'
 import { generateSummary } from './llm/summary'
@@ -16,8 +17,8 @@ import { TranscriptSegment, Suggestion, CallArtifacts } from '../shared/types'
 const SAMPLE_RATE = 16000
 
 export class SessionManager {
-  private salesStt: DeepgramStreamingClient | null = null
-  private patientStt: DeepgramStreamingClient | null = null
+  private salesStt: DeepgramStreamingClient | GroqWhisperClient | null = null
+  private patientStt: DeepgramStreamingClient | GroqWhisperClient | null = null
   private llm: ClaudeSuggestionClient | OpenAISuggestionClient | null = null
   private transcript: TranscriptSegment[] = []
   private active = false
@@ -48,17 +49,33 @@ export class SessionManager {
     if (this.active) return { ok: true, callId: this.callId ?? undefined }
 
     const settings = getSettings()
-    if (!settings.deepgramApiKey) {
-      return { ok: false, error: 'Deepgram API key missing. Open Settings.' }
+    if (settings.sttProvider === 'groq') {
+      if (!settings.groqApiKey) {
+        return { ok: false, error: 'Groq API key missing. Open Settings.' }
+      }
+    } else {
+      if (!settings.deepgramApiKey) {
+        return { ok: false, error: 'Deepgram API key missing. Open Settings.' }
+      }
     }
     if (settings.featureLiveSuggestions) {
-      const providerKey =
-        settings.llmProvider === 'openai' ? settings.openaiApiKey : settings.anthropicApiKey
-      if (!providerKey) {
-        const which = settings.llmProvider === 'openai' ? 'OpenAI' : 'Anthropic'
-        return {
-          ok: false,
-          error: `${which} API key missing (required for live suggestions).`
+      if (settings.llmProvider === 'custom') {
+        if (!settings.customBaseUrl) {
+          return {
+            ok: false,
+            error: 'Custom endpoint Base URL missing (required for live suggestions).'
+          }
+        }
+        // customApiKey is optional — Ollama doesn't need one
+      } else {
+        const providerKey =
+          settings.llmProvider === 'openai' ? settings.openaiApiKey : settings.anthropicApiKey
+        if (!providerKey) {
+          const which = settings.llmProvider === 'openai' ? 'OpenAI' : 'Anthropic'
+          return {
+            ok: false,
+            error: `${which} API key missing (required for live suggestions).`
+          }
         }
       }
     }
@@ -83,37 +100,63 @@ export class SessionManager {
       summary: settings.featureGenerateSummary
     })
 
-    this.salesStt = new DeepgramStreamingClient({
-      apiKey: settings.deepgramApiKey,
-      language: settings.language,
-      sampleRate: SAMPLE_RATE,
-      speaker: 'sales'
-    })
-    this.patientStt = new DeepgramStreamingClient({
-      apiKey: settings.deepgramApiKey,
-      language: settings.language,
-      sampleRate: SAMPLE_RATE,
-      speaker: 'patient'
-    })
+    if (settings.sttProvider === 'groq') {
+      this.salesStt = new GroqWhisperClient({
+        apiKey: settings.groqApiKey,
+        language: settings.language,
+        sampleRate: SAMPLE_RATE,
+        speaker: 'sales'
+      })
+      this.patientStt = new GroqWhisperClient({
+        apiKey: settings.groqApiKey,
+        language: settings.language,
+        sampleRate: SAMPLE_RATE,
+        speaker: 'patient'
+      })
+    } else {
+      this.salesStt = new DeepgramStreamingClient({
+        apiKey: settings.deepgramApiKey,
+        language: settings.language,
+        sampleRate: SAMPLE_RATE,
+        speaker: 'sales'
+      })
+      this.patientStt = new DeepgramStreamingClient({
+        apiKey: settings.deepgramApiKey,
+        language: settings.language,
+        sampleRate: SAMPLE_RATE,
+        speaker: 'patient'
+      })
+    }
+    console.log(`[session] stt provider: ${settings.sttProvider}`)
 
     if (settings.featureLiveSuggestions) {
-      this.llm =
-        settings.llmProvider === 'openai'
-          ? new OpenAISuggestionClient({
-              apiKey: settings.openaiApiKey,
-              model: settings.openaiModel,
-              systemPrompt: settings.systemPrompt
-            })
-          : new ClaudeSuggestionClient({
-              apiKey: settings.anthropicApiKey,
-              model: settings.llmModel,
-              systemPrompt: settings.systemPrompt
-            })
-      console.log(
-        `[session] llm provider: ${settings.llmProvider}, model: ${
-          settings.llmProvider === 'openai' ? settings.openaiModel : settings.llmModel
-        }`
-      )
+      if (settings.llmProvider === 'custom') {
+        this.llm = new OpenAISuggestionClient({
+          apiKey: settings.customApiKey,
+          model: settings.customModel,
+          systemPrompt: settings.systemPrompt,
+          baseURL: settings.customBaseUrl
+        })
+      } else if (settings.llmProvider === 'openai') {
+        this.llm = new OpenAISuggestionClient({
+          apiKey: settings.openaiApiKey,
+          model: settings.openaiModel,
+          systemPrompt: settings.systemPrompt
+        })
+      } else {
+        this.llm = new ClaudeSuggestionClient({
+          apiKey: settings.anthropicApiKey,
+          model: settings.llmModel,
+          systemPrompt: settings.systemPrompt
+        })
+      }
+      const usedModel =
+        settings.llmProvider === 'custom'
+          ? `${settings.customModel} @ ${settings.customBaseUrl}`
+          : settings.llmProvider === 'openai'
+            ? settings.openaiModel
+            : settings.llmModel
+      console.log(`[session] llm provider: ${settings.llmProvider}, model: ${usedModel}`)
       this.llm.on('suggestion', (sug: Suggestion) => {
         this.broadcast('suggestion:update', sug)
         if (sug.status === 'done' || sug.status === 'error') {
@@ -140,16 +183,20 @@ export class SessionManager {
     }
   }
 
-  private wireStt(stt: DeepgramStreamingClient, speaker: 'sales' | 'patient'): void {
+  private wireStt(
+    stt: DeepgramStreamingClient | GroqWhisperClient,
+    speaker: 'sales' | 'patient'
+  ): void {
     stt.on('transcript', (seg: TranscriptSegment) => {
       if (seg.isFinal) {
         this.transcript.push(seg)
         if (seg.speaker === 'patient') {
           this.lastPatientFinalAt = Date.now()
-          // Fallback: if utterance-end never arrives, trigger after a delay.
+          console.log(`[session] patient FINAL: "${seg.text}" — arming fallback timer`)
           if (this.patientFallbackTimer) clearTimeout(this.patientFallbackTimer)
           this.patientFallbackTimer = setTimeout(() => {
             this.patientFallbackTimer = null
+            console.log('[session] fallback timer fired (utterance-end missed)')
             this.maybeTriggerSuggestion()
           }, this.patientFinalFallbackMs)
         }
@@ -165,6 +212,7 @@ export class SessionManager {
         clearTimeout(this.patientFallbackTimer)
         this.patientFallbackTimer = null
       }
+      console.log('[session] patient utterance-end → maybeTrigger')
       this.maybeTriggerSuggestion()
     })
 
@@ -181,11 +229,19 @@ export class SessionManager {
    * If a suggestion is currently streaming, queue exactly one pending trigger.
    */
   private maybeTriggerSuggestion(): void {
-    if (!this.llm) return
-    // Only fire if patient has actually said something new since last suggestion.
-    if (this.lastPatientFinalAt <= this.lastSuggestionAt) return
+    if (!this.llm) {
+      console.log('[session] maybeTrigger skip: no llm (live suggestions disabled?)')
+      return
+    }
+    if (this.lastPatientFinalAt <= this.lastSuggestionAt) {
+      console.log(
+        `[session] maybeTrigger skip: no new patient content (lastPatientFinalAt=${this.lastPatientFinalAt}, lastSuggestionAt=${this.lastSuggestionAt})`
+      )
+      return
+    }
 
     if (this.suggestionInFlight) {
+      console.log('[session] maybeTrigger queue: suggestion in flight, marking pending')
       this.pendingTrigger = true
       return
     }
@@ -193,12 +249,13 @@ export class SessionManager {
     const now = Date.now()
     const elapsed = now - this.lastSuggestionAt
     if (elapsed < this.minSuggestionGapMs) {
-      // Re-check after the rate-limit window so we don't drop the trigger entirely.
       const wait = this.minSuggestionGapMs - elapsed
+      console.log(`[session] maybeTrigger defer: rate-limit, retry in ${wait}ms`)
       setTimeout(() => this.maybeTriggerSuggestion(), wait)
       return
     }
 
+    console.log('[session] maybeTrigger FIRE: calling llm.requestSuggestion')
     this.lastSuggestionAt = now
     this.suggestionInFlight = true
     void this.llm.requestSuggestion(this.transcript)
@@ -212,11 +269,24 @@ export class SessionManager {
     this.salesStt?.sendAudio(chunk)
   }
 
+  /**
+   * Manual trigger from the Regenerate button. Unlike auto-trigger, this
+   * cancels anything currently streaming and starts fresh — the user is
+   * explicitly asking for a new reply right now.
+   */
   requestSuggestion(): void {
-    if (this.llm) {
-      this.lastSuggestionAt = Date.now()
-      void this.llm.requestSuggestion(this.transcript)
+    if (!this.llm) return
+    console.log('[session] manual Regenerate — cancelling inflight, firing fresh')
+    this.llm.cancelInflight()
+    this.suggestionInFlight = false
+    this.pendingTrigger = false
+    if (this.patientFallbackTimer) {
+      clearTimeout(this.patientFallbackTimer)
+      this.patientFallbackTimer = null
     }
+    this.lastSuggestionAt = Date.now()
+    this.suggestionInFlight = true
+    void this.llm.requestSuggestion(this.transcript)
   }
 
   /**
@@ -269,8 +339,8 @@ export class SessionManager {
             settings.speakerLabelThem
           )
           artifacts.transcriptTxtPath = paths.txt
-          artifacts.transcriptMdPath = paths.md
-          console.log(`[session] transcript saved: ${paths.txt} + ${paths.md}`)
+          if (paths.md) artifacts.transcriptMdPath = paths.md
+          console.log(`[session] transcript saved: ${paths.txt}${paths.md ? ` + ${paths.md}` : ''}`)
         } catch (err) {
           console.error('[session] save transcript failed', err)
         }
@@ -279,12 +349,26 @@ export class SessionManager {
 
     if (settings.featureGenerateSummary) {
       const summaryKey =
-        settings.llmProvider === 'openai' ? settings.openaiApiKey : settings.anthropicApiKey
+        settings.llmProvider === 'custom'
+          ? settings.customApiKey
+          : settings.llmProvider === 'openai'
+            ? settings.openaiApiKey
+            : settings.anthropicApiKey
       const summaryModel =
-        settings.llmProvider === 'openai' ? settings.openaiModel : settings.llmModel
-      if (!summaryKey) {
-        const which = settings.llmProvider === 'openai' ? 'OpenAI' : 'Anthropic'
-        console.warn(`[session] summary skipped — no ${which} API key`)
+        settings.llmProvider === 'custom'
+          ? settings.customModel
+          : settings.llmProvider === 'openai'
+            ? settings.openaiModel
+            : settings.llmModel
+      const summaryBaseUrl =
+        settings.llmProvider === 'custom' ? settings.customBaseUrl : undefined
+      const keyMissing = settings.llmProvider === 'custom' ? !settings.customBaseUrl : !summaryKey
+      if (keyMissing) {
+        const which =
+          settings.llmProvider === 'custom'
+            ? 'custom endpoint URL'
+            : `${settings.llmProvider === 'openai' ? 'OpenAI' : 'Anthropic'} API key`
+        console.warn(`[session] summary skipped — no ${which}`)
       } else if (this.transcript.length === 0) {
         console.warn('[session] summary skipped — no transcript')
       } else {
@@ -294,14 +378,15 @@ export class SessionManager {
             provider: settings.llmProvider,
             apiKey: summaryKey,
             model: summaryModel,
+            baseURL: summaryBaseUrl,
             transcript: this.transcript,
             meLabel: settings.speakerLabelMe,
             themLabel: settings.speakerLabelThem
           })
           const paths = await saveSummary(callId, summaryMd)
           artifacts.summaryTxtPath = paths.txt
-          artifacts.summaryMdPath = paths.md
-          console.log(`[session] summary saved: ${paths.txt} + ${paths.md}`)
+          if (paths.md) artifacts.summaryMdPath = paths.md
+          console.log(`[session] summary saved: ${paths.txt}${paths.md ? ` + ${paths.md}` : ''}`)
         } catch (err) {
           console.error('[session] generate summary failed', err)
         }

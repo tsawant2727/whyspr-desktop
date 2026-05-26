@@ -19,10 +19,25 @@ export async function ensureRecordingsDir(): Promise<string> {
   return dir
 }
 
+/**
+ * Generate a human-friendly call identifier used as the per-call folder name.
+ * Format: 2026-05-26_14-30_Meet — sortable, readable, no spaces.
+ */
 export function makeCallId(): string {
   const d = new Date()
   const pad = (n: number): string => n.toString().padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}_Meet`
+}
+
+/**
+ * Each call gets its own subfolder under the base recordings dir. All
+ * artifacts (recording, transcript, summary) live together inside it.
+ */
+async function ensureCallFolder(callId: string): Promise<string> {
+  const base = await ensureRecordingsDir()
+  const folder = join(base, callId)
+  await fs.mkdir(folder, { recursive: true })
+  return folder
 }
 
 export async function saveRecording(
@@ -30,37 +45,40 @@ export async function saveRecording(
   data: Buffer,
   mimeType: string
 ): Promise<string> {
-  const dir = await ensureRecordingsDir()
+  const folder = await ensureCallFolder(callId)
   const ext = mimeType.includes('webm') ? 'webm' : mimeType.includes('opus') ? 'opus' : 'audio'
-  const filePath = join(dir, `${callId}.${ext}`)
+  const filePath = join(folder, `recording.${ext}`)
   await fs.writeFile(filePath, data)
   return filePath
 }
 
 /**
- * Save transcript in BOTH .txt and .md formats so users can pick what they prefer.
- * .txt for normal users, .md for power users (Notion/Obsidian/Bear etc.)
+ * Save transcript. Always writes .txt. Also writes .md if saveMarkdownToo
+ * setting is enabled.
  */
 export async function saveTranscript(
   callId: string,
   transcript: TranscriptSegment[],
   meLabel: string,
   themLabel: string
-): Promise<{ txt: string; md: string }> {
-  const dir = await ensureRecordingsDir()
+): Promise<{ txt: string; md?: string }> {
+  const folder = await ensureCallFolder(callId)
+  const { saveMarkdownToo } = getSettings()
 
-  // .txt — clean plain text
-  const txtPath = join(dir, `${callId}_transcript.txt`)
+  const txtPath = join(folder, `transcript.txt`)
   const txtContent = formatTranscriptTxt(callId, transcript, meLabel, themLabel)
   await fs.writeFile(txtPath, txtContent, 'utf8')
 
-  // .md — markdown with structure
-  const mdPath = join(dir, `${callId}_transcript.md`)
+  if (!saveMarkdownToo) {
+    return { txt: txtPath }
+  }
+
+  const mdPath = join(folder, `transcript.md`)
   const startTs = transcript[0]?.timestampMs ?? Date.now()
   const mdLines: string[] = [
     `# Call Transcript`,
     ``,
-    `**Call ID:** ${callId}`,
+    `**Call:** ${callId}`,
     `**Started:** ${new Date(startTs).toLocaleString()}`,
     ``,
     `---`,
@@ -81,22 +99,26 @@ export async function saveTranscript(
 }
 
 /**
- * Save summary in BOTH formats. Input is markdown from Claude; we save the
- * markdown as-is and also generate a stripped-down .txt version.
+ * Save summary. Always writes .txt. Also writes .md if saveMarkdownToo
+ * setting is enabled.
  */
 export async function saveSummary(
   callId: string,
   summaryMarkdown: string
-): Promise<{ txt: string; md: string }> {
-  const dir = await ensureRecordingsDir()
+): Promise<{ txt: string; md?: string }> {
+  const folder = await ensureCallFolder(callId)
+  const { saveMarkdownToo } = getSettings()
 
-  const mdPath = join(dir, `${callId}_summary.md`)
-  await fs.writeFile(mdPath, summaryMarkdown, 'utf8')
-
-  const txtPath = join(dir, `${callId}_summary.txt`)
-  const txtContent = `MEETING SUMMARY\n═══════════════\n\nCall ID: ${callId}\nGenerated: ${new Date().toLocaleString()}\n\n${'─'.repeat(40)}\n\n${summaryMdToTxt(summaryMarkdown)}\n`
+  const txtPath = join(folder, `summary.txt`)
+  const txtContent = `MEETING SUMMARY\n═══════════════\n\nCall: ${callId}\nGenerated: ${new Date().toLocaleString()}\n\n${'─'.repeat(40)}\n\n${summaryMdToTxt(summaryMarkdown)}\n`
   await fs.writeFile(txtPath, txtContent, 'utf8')
 
+  if (!saveMarkdownToo) {
+    return { txt: txtPath }
+  }
+
+  const mdPath = join(folder, `summary.md`)
+  await fs.writeFile(mdPath, summaryMarkdown, 'utf8')
   return { txt: txtPath, md: mdPath }
 }
 

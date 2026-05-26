@@ -6,6 +6,7 @@ type OpenAIOptions = {
   apiKey: string
   model: string
   systemPrompt: string
+  baseURL?: string // for custom OpenAI-compatible endpoints (Ollama, LM Studio, Groq, etc.)
 }
 
 export class OpenAISuggestionClient extends EventEmitter {
@@ -14,7 +15,10 @@ export class OpenAISuggestionClient extends EventEmitter {
 
   constructor(private opts: OpenAIOptions) {
     super()
-    this.client = new OpenAI({ apiKey: opts.apiKey })
+    this.client = new OpenAI({
+      apiKey: opts.apiKey || 'not-required',
+      baseURL: opts.baseURL
+    })
   }
 
   updateSystemPrompt(prompt: string): void {
@@ -27,6 +31,7 @@ export class OpenAISuggestionClient extends EventEmitter {
       return
     }
 
+    console.log(`[openai] requesting suggestion (transcript segs=${transcript.length})`)
     const recent = transcript.slice(-25)
     const conversation = recent
       .filter((s) => s.isFinal)
@@ -55,13 +60,13 @@ export class OpenAISuggestionClient extends EventEmitter {
       const stream = await this.client.chat.completions.create(
         {
           model: this.opts.model,
-          max_tokens: 1200,
+          max_tokens: 400,
           stream: true,
           messages: [
             { role: 'system', content: this.opts.systemPrompt },
             {
               role: 'user',
-              content: `Recent conversation (most recent at bottom):\n\n${conversation}\n\nBased on the last thing the other person said, give the best response to speak next. Output only the response itself — no preamble, no meta-commentary. Adapt length to the question (short for chitchat, long for technical/coding questions).`
+              content: `Recent conversation (most recent at bottom):\n\n${conversation}\n\nWrite the next reply the user should say to the other person. Rules:\n- Output ONLY the spoken reply, nothing else.\n- No preamble like "You could say..." or "Here's the reply".\n- No meta-commentary, system notes, logs, or markdown formatting.\n- No code blocks or technical output unless the other person literally asked for code.\n- Match the language and tone of the conversation (Hindi / English / Hinglish).\n- Keep it conversational and concise (1-3 sentences) unless a detailed answer was explicitly asked for.`
             }
           ]
         },

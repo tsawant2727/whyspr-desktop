@@ -1,10 +1,18 @@
-export type LlmProvider = 'anthropic' | 'openai'
+export type LlmProvider = 'anthropic' | 'openai' | 'custom'
+
+export type SttProvider = 'deepgram' | 'groq'
 
 export type AppSettings = {
   deepgramApiKey: string
+  groqApiKey: string
+  sttProvider: SttProvider
   anthropicApiKey: string
   openaiApiKey: string
   llmProvider: LlmProvider
+  // Custom OpenAI-compatible endpoint (Ollama, LM Studio, Groq, OpenRouter, etc.)
+  customBaseUrl: string // e.g. http://localhost:11434/v1
+  customApiKey: string // optional — Ollama doesn't need one, cloud-compat APIs do
+  customModel: string // free-text model id, e.g. llama3.1:8b
   systemPrompt: string
   language: 'multi' | 'en' | 'hi'
   llmModel: string // Anthropic model id when llmProvider === 'anthropic'
@@ -12,10 +20,18 @@ export type AppSettings = {
   suggestionTriggerSilenceMs: number
   // Feature toggles — each user picks what they need
   featureLiveSuggestions: boolean
+  featureShowTranscript: boolean // show live transcript panel in overlay by default
   featureRecordAudio: boolean
   featureRecordVideo: boolean // captures screen + audio together (.webm)
   featureSaveTranscript: boolean
   featureGenerateSummary: boolean
+  // Save markdown (.md) versions alongside .txt. Off by default — most users
+  // only want plain text files.
+  saveMarkdownToo: boolean
+  // Free-text notes the user writes before a call (talking points, prices,
+  // key facts). Persisted across sessions. Also injected into the LLM system
+  // prompt so suggestions reference them.
+  userNotes: string
   // Speaker labels (configurable per use case)
   speakerLabelMe: string // mic = "you / sales / agent / interviewer / doctor"
   speakerLabelThem: string // system audio = "patient / customer / candidate / client"
@@ -78,19 +94,27 @@ Customize this prompt in Settings for your specific use case:
 
 export const DEFAULT_SETTINGS: AppSettings = {
   deepgramApiKey: '',
+  groqApiKey: '',
+  sttProvider: 'deepgram',
   anthropicApiKey: '',
   openaiApiKey: '',
   llmProvider: 'anthropic',
+  customBaseUrl: 'http://localhost:11434/v1',
+  customApiKey: 'ollama',
+  customModel: 'llama3.1:8b',
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   language: 'multi',
   llmModel: 'claude-haiku-4-5-20251001',
   openaiModel: 'gpt-4o-mini',
   suggestionTriggerSilenceMs: 1500,
   featureLiveSuggestions: true,
+  featureShowTranscript: false,
   featureRecordAudio: false,
   featureRecordVideo: false,
   featureSaveTranscript: false,
   featureGenerateSummary: false,
+  saveMarkdownToo: false,
+  userNotes: '',
   speakerLabelMe: 'You',
   speakerLabelThem: 'Other',
   customRecordingsDir: '',

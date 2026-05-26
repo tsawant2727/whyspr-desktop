@@ -36,8 +36,8 @@ export class DeepgramStreamingClient extends EventEmitter {
           interim_results: true,
           smart_format: true,
           punctuate: true,
-          endpointing: 600,
-          utterance_end_ms: 1200,
+          endpointing: 500,
+          utterance_end_ms: 1000,
           vad_events: true
         })
 

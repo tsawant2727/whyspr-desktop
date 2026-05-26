@@ -63,6 +63,11 @@ const api = {
       const listener = (_: unknown, s: { active: boolean; error?: string }): void => cb(s)
       ipcRenderer.on('session:status', listener)
       return () => ipcRenderer.removeListener('session:status', listener)
+    },
+    settingsChanged: (cb: (settings: AppSettings) => void) => {
+      const listener = (_: unknown, s: AppSettings): void => cb(s)
+      ipcRenderer.on('settings:updated', listener)
+      return () => ipcRenderer.removeListener('settings:updated', listener)
     }
   }
 }
