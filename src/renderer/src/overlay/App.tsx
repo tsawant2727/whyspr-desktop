@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import type {
-  TranscriptSegment,
   Suggestion,
   AppSettings,
-  CallArtifacts
+  CallArtifacts,
+  TranscriptSegment
 } from '../../../shared/types'
 import { BRAND } from '../../../shared/branding'
 import { startAudioCapture, type AudioCaptureHandle } from '../audio-capture'
@@ -12,12 +12,16 @@ export default function App(): JSX.Element {
   const [active, setActive] = useState(false)
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [transcript, setTranscript] = useState<TranscriptSegment[]>([])
-  const [interim, setInterim] = useState<TranscriptSegment | null>(null)
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null)
+  // Last 2 fully-streamed suggestions, newest first. Lets the rep still see the
+  // previous reply when a new one starts generating.
+  const [previousSuggestions, setPreviousSuggestions] = useState<Suggestion[]>([])
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [finalizing, setFinalizing] = useState(false)
   const [lastCallArtifacts, setLastCallArtifacts] = useState<CallArtifacts | null>(null)
+  const [showTranscript, setShowTranscript] = useState(false)
+  const [transcript, setTranscript] = useState<TranscriptSegment[]>([])
+  const [interim, setInterim] = useState<TranscriptSegment | null>(null)
   const audioRef = useRef<AudioCaptureHandle | null>(null)
   const transcriptEndRef = useRef<HTMLDivElement | null>(null)
 
@@ -32,7 +36,15 @@ export default function App(): JSX.Element {
         setInterim(seg)
       }
     })
-    const off2 = window.api.on.suggestion((sug) => setSuggestion(sug))
+    const off2 = window.api.on.suggestion((sug) => {
+      setSuggestion((prev) => {
+        // New suggestion id → archive the previous one (if any) into history.
+        if (prev && prev.id !== sug.id && prev.text) {
+          setPreviousSuggestions((hist) => [prev, ...hist].slice(0, 2))
+        }
+        return sug
+      })
+    })
     const off3 = window.api.on.sessionStatus((s) => {
       setActive(s.active)
       if (s.error) setError(s.error)
@@ -45,8 +57,10 @@ export default function App(): JSX.Element {
   }, [])
 
   useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [transcript.length, interim])
+    if (showTranscript) {
+      transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    }
+  }, [transcript.length, interim, showTranscript])
 
   async function refreshSettings(): Promise<AppSettings | null> {
     const s = await window.api.settings.get()
@@ -58,8 +72,10 @@ export default function App(): JSX.Element {
     setError(null)
     setStarting(true)
     setLastCallArtifacts(null)
-    setTranscript([])
     setSuggestion(null)
+    setPreviousSuggestions([])
+    setTranscript([])
+    setInterim(null)
     try {
       const s = await refreshSettings()
       const res = await window.api.session.start()
@@ -124,11 +140,11 @@ export default function App(): JSX.Element {
 
   const recording = active && !!settings?.featureRecordAudio
   const liveSuggestionsEnabled = settings?.featureLiveSuggestions ?? true
-  const needsSetup =
+  const hasLlmKey =
     !!settings &&
-    (!settings.deepgramApiKey ||
-      !settings.anthropicApiKey ||
-      !settings.activeTemplateId)
+    (settings.llmProvider === 'openai' ? !!settings.openaiApiKey : !!settings.anthropicApiKey)
+  const needsSetup =
+    !!settings && (!settings.deepgramApiKey || !hasLlmKey || !settings.activeTemplateId)
   const canStart = !!settings && !!settings.deepgramApiKey
 
   return (
@@ -152,6 +168,10 @@ export default function App(): JSX.Element {
             )}
           </div>
           <div className="no-drag flex items-center gap-1.5">
+            <TranscriptToggle
+              on={showTranscript}
+              onChange={setShowTranscript}
+            />
             <button
               onClick={() => window.api.settings.open()}
               className="text-xs text-white/60 hover:text-white px-2 py-1 rounded hover:bg-white/10"
@@ -211,8 +231,9 @@ export default function App(): JSX.Element {
               <li className={settings?.deepgramApiKey ? 'line-through opacity-50' : ''}>
                 Add your Deepgram API key (free $200 credit)
               </li>
-              <li className={settings?.anthropicApiKey ? 'line-through opacity-50' : ''}>
-                Add your Anthropic API key (for AI suggestions)
+              <li className={hasLlmKey ? 'line-through opacity-50' : ''}>
+                Add your {settings?.llmProvider === 'openai' ? 'OpenAI' : 'Anthropic'} API key (for
+                AI suggestions)
               </li>
             </ol>
             <button
@@ -279,8 +300,12 @@ export default function App(): JSX.Element {
         )}
 
         {liveSuggestionsEnabled && (
-          <section className="no-drag px-5 py-4 border-b border-white/10">
-            <div className="flex items-center justify-between mb-2.5">
+          <section
+            className={`no-drag flex flex-col px-5 py-4 overflow-hidden ${
+              showTranscript ? 'flex-[3]' : 'flex-1'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-3 shrink-0">
               <span className="text-xs uppercase tracking-wider text-accent/90 font-semibold">
                 Suggested reply
               </span>
@@ -302,41 +327,142 @@ export default function App(): JSX.Element {
                 )}
               </div>
             </div>
-            <SuggestionBox
-              text={suggestion?.text}
-              status={suggestion?.status}
-              active={active}
-              themLabel={settings?.speakerLabelThem ?? 'the other side'}
-            />
+            <div className="flex-1 overflow-y-auto space-y-3">
+              <SuggestionBox
+                text={suggestion?.text}
+                status={suggestion?.status}
+                active={active}
+                themLabel={settings?.speakerLabelThem ?? 'the other side'}
+              />
+              {previousSuggestions.length > 0 && (
+                <div className="space-y-2 pt-1">
+                  <div className="text-[10px] uppercase tracking-wider text-white/40 font-semibold px-1">
+                    Previous
+                  </div>
+                  {previousSuggestions.map((s) => (
+                    <PreviousSuggestion key={s.id} suggestion={s} />
+                  ))}
+                </div>
+              )}
+            </div>
           </section>
         )}
 
-        <section className="no-drag flex-1 overflow-y-auto px-5 py-3 text-sm space-y-2.5">
-          <div className="text-xs uppercase tracking-wider text-white/50 mb-2 font-semibold">
-            Transcript
-          </div>
-          {transcript.length === 0 && !interim && (
-            <div className="text-white/30 italic">Conversation will show here…</div>
-          )}
-          {transcript.map((seg) => (
-            <TranscriptLine
-              key={seg.id}
-              seg={seg}
-              meLabel={settings?.speakerLabelMe ?? 'You'}
-              themLabel={settings?.speakerLabelThem ?? 'Other'}
-            />
-          ))}
-          {interim && (
-            <TranscriptLine
-              seg={interim}
-              meLabel={settings?.speakerLabelMe ?? 'You'}
-              themLabel={settings?.speakerLabelThem ?? 'Other'}
-              interim
-            />
-          )}
-          <div ref={transcriptEndRef} />
-        </section>
+        {showTranscript && (
+          <section className="no-drag flex-[2] flex flex-col overflow-hidden border-t border-white/10">
+            <div className="flex items-center justify-between px-5 pt-3 pb-2 shrink-0">
+              <span className="text-xs uppercase tracking-wider text-white/50 font-semibold">
+                Transcript
+              </span>
+              <button
+                onClick={() => setShowTranscript(false)}
+                className="text-[10px] text-white/40 hover:text-white px-1.5 py-0.5 rounded hover:bg-white/10"
+                title="Hide transcript"
+              >
+                Hide
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-5 pb-3 text-sm space-y-2.5">
+              {transcript.length === 0 && !interim && (
+                <div className="text-white/30 italic">Conversation will show here…</div>
+              )}
+              {transcript.map((seg) => (
+                <TranscriptLine
+                  key={seg.id}
+                  seg={seg}
+                  meLabel={settings?.speakerLabelMe ?? 'You'}
+                  themLabel={settings?.speakerLabelThem ?? 'Other'}
+                />
+              ))}
+              {interim && (
+                <TranscriptLine
+                  seg={interim}
+                  meLabel={settings?.speakerLabelMe ?? 'You'}
+                  themLabel={settings?.speakerLabelThem ?? 'Other'}
+                  interim
+                />
+              )}
+              <div ref={transcriptEndRef} />
+            </div>
+          </section>
+        )}
       </div>
+    </div>
+  )
+}
+
+function TranscriptToggle({
+  on,
+  onChange
+}: {
+  on: boolean
+  onChange: (v: boolean) => void
+}): JSX.Element {
+  return (
+    <button
+      onClick={() => onChange(!on)}
+      title={on ? 'Hide live transcript' : 'Show live transcript'}
+      className="flex items-center gap-1.5 text-[10px] text-white/60 hover:text-white px-2 py-1 rounded hover:bg-white/10"
+    >
+      <span className="uppercase tracking-wider font-semibold">Transcript</span>
+      <span
+        className={`relative inline-block w-7 h-3.5 rounded-full transition-colors ${
+          on ? 'bg-accent' : 'bg-white/15'
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 w-2.5 h-2.5 rounded-full bg-white transition-transform ${
+            on ? 'translate-x-3.5' : 'translate-x-0.5'
+          }`}
+        />
+      </span>
+    </button>
+  )
+}
+
+function TranscriptLine({
+  seg,
+  interim,
+  meLabel,
+  themLabel
+}: {
+  seg: TranscriptSegment
+  interim?: boolean
+  meLabel: string
+  themLabel: string
+}): JSX.Element {
+  const isThem = seg.speaker === 'patient'
+  const label = isThem ? themLabel : seg.speaker === 'sales' ? meLabel : 'Unknown'
+  return (
+    <div className={`flex gap-2.5 ${interim ? 'opacity-50' : ''}`}>
+      <span
+        className={`text-[11px] font-bold uppercase tracking-wider shrink-0 w-16 pt-0.5 truncate ${
+          isThem ? 'text-accent2' : 'text-white/60'
+        }`}
+      >
+        {label}
+      </span>
+      <span className="flex-1 text-white/90 leading-relaxed text-sm">{seg.text}</span>
+    </div>
+  )
+}
+
+function PreviousSuggestion({ suggestion }: { suggestion: Suggestion }): JSX.Element {
+  const ageS = Math.max(1, Math.round((Date.now() - suggestion.createdAtMs) / 1000))
+  return (
+    <div className="rounded-lg bg-white/5 border border-white/10 p-3 text-sm leading-relaxed text-white/70">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[10px] uppercase tracking-wider text-white/40">
+          {ageS}s ago
+        </span>
+        <button
+          onClick={() => navigator.clipboard.writeText(suggestion.text).catch(() => undefined)}
+          className="text-[10px] text-white/40 hover:text-white px-1.5 py-0.5 rounded hover:bg-white/10"
+        >
+          Copy
+        </button>
+      </div>
+      <div className="whitespace-pre-wrap">{suggestion.text}</div>
     </div>
   )
 }
@@ -354,7 +480,7 @@ function SuggestionBox({
 }): JSX.Element {
   if (!text) {
     return (
-      <div className="min-h-[140px] rounded-xl bg-accent/10 border border-accent/40 p-5 text-base leading-relaxed text-emerald-50 shadow-inner">
+      <div className="min-h-[200px] rounded-xl bg-accent/10 border border-accent/40 p-6 text-lg leading-relaxed text-emerald-50 shadow-inner flex items-center">
         <span className="text-white/40 italic font-normal">
           {active
             ? `Listening… suggestions appear when ${themLabel} speaks.`
@@ -364,10 +490,10 @@ function SuggestionBox({
     )
   }
   return (
-    <div className="min-h-[140px] max-h-[400px] overflow-y-auto rounded-xl bg-accent/10 border border-accent/40 p-5 text-emerald-50 shadow-inner">
+    <div className="min-h-[200px] rounded-xl bg-accent/10 border border-accent/40 p-6 text-emerald-50 shadow-inner">
       <RichSuggestionContent text={text} />
       {status === 'streaming' && (
-        <span className="ml-1 inline-block w-2 h-4 bg-emerald-300 animate-pulse align-middle rounded-sm" />
+        <span className="ml-1 inline-block w-2.5 h-5 bg-emerald-300 animate-pulse align-middle rounded-sm" />
       )}
     </div>
   )
@@ -397,7 +523,7 @@ function RichSuggestionContent({ text }: { text: string }): JSX.Element {
         return (
           <p
             key={i}
-            className="text-lg leading-relaxed font-medium whitespace-pre-wrap"
+            className="text-xl leading-relaxed font-medium whitespace-pre-wrap"
           >
             {renderInlineCode(part)}
           </p>
@@ -411,38 +537,11 @@ function renderInlineCode(text: string): React.ReactNode {
   const parts = text.split(/(`[^`]+`)/g)
   return parts.map((p, i) =>
     p.startsWith('`') && p.endsWith('`') ? (
-      <code key={i} className="px-1.5 py-0.5 rounded bg-black/30 text-emerald-200 font-mono text-base">
+      <code key={i} className="px-1.5 py-0.5 rounded bg-black/30 text-emerald-200 font-mono text-lg">
         {p.slice(1, -1)}
       </code>
     ) : (
       <span key={i}>{p}</span>
     )
-  )
-}
-
-function TranscriptLine({
-  seg,
-  interim,
-  meLabel,
-  themLabel
-}: {
-  seg: TranscriptSegment
-  interim?: boolean
-  meLabel: string
-  themLabel: string
-}): JSX.Element {
-  const isThem = seg.speaker === 'patient'
-  const label = isThem ? themLabel : seg.speaker === 'sales' ? meLabel : 'Unknown'
-  return (
-    <div className={`flex gap-2.5 ${interim ? 'opacity-50' : ''}`}>
-      <span
-        className={`text-[11px] font-bold uppercase tracking-wider shrink-0 w-16 pt-0.5 truncate ${
-          isThem ? 'text-accent2' : 'text-white/60'
-        }`}
-      >
-        {label}
-      </span>
-      <span className="flex-1 text-white/90 leading-relaxed text-sm">{seg.text}</span>
-    </div>
   )
 }

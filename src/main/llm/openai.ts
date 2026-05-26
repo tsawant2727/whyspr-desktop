@@ -1,20 +1,20 @@
-import Anthropic from '@anthropic-ai/sdk'
+import OpenAI from 'openai'
 import { EventEmitter } from 'events'
 import { Suggestion, TranscriptSegment } from '../../shared/types'
 
-type ClaudeOptions = {
+type OpenAIOptions = {
   apiKey: string
   model: string
   systemPrompt: string
 }
 
-export class ClaudeSuggestionClient extends EventEmitter {
-  private client: Anthropic
+export class OpenAISuggestionClient extends EventEmitter {
+  private client: OpenAI
   private inflight: AbortController | null = null
 
-  constructor(private opts: ClaudeOptions) {
+  constructor(private opts: OpenAIOptions) {
     super()
-    this.client = new Anthropic({ apiKey: opts.apiKey })
+    this.client = new OpenAI({ apiKey: opts.apiKey })
   }
 
   updateSystemPrompt(prompt: string): void {
@@ -22,18 +22,18 @@ export class ClaudeSuggestionClient extends EventEmitter {
   }
 
   async requestSuggestion(transcript: TranscriptSegment[]): Promise<void> {
-    // Session gates concurrent calls via its own inflight flag, so we do NOT
-    // cancel a streaming reply mid-flight here — that's the bug where a new
-    // reply would wipe out the previous one before the user could finish reading.
     if (this.inflight) {
-      console.warn('[claude] requestSuggestion called while inflight — ignoring')
+      console.warn('[openai] requestSuggestion called while inflight — ignoring')
       return
     }
 
     const recent = transcript.slice(-25)
     const conversation = recent
       .filter((s) => s.isFinal)
-      .map((s) => `${s.speaker === 'patient' ? 'PATIENT' : s.speaker === 'sales' ? 'SALES' : 'UNKNOWN'}: ${s.text}`)
+      .map(
+        (s) =>
+          `${s.speaker === 'patient' ? 'PATIENT' : s.speaker === 'sales' ? 'SALES' : 'UNKNOWN'}: ${s.text}`
+      )
       .join('\n')
 
     const suggestionId = `sug-${Date.now()}`
@@ -52,14 +52,13 @@ export class ClaudeSuggestionClient extends EventEmitter {
     this.inflight = controller
 
     try {
-      const stream = await this.client.messages.stream(
+      const stream = await this.client.chat.completions.create(
         {
           model: this.opts.model,
-          // Generous limit so technical/coding/system-design answers can stream
-          // fully. For short conversational use cases the model stops earlier.
           max_tokens: 1200,
-          system: this.opts.systemPrompt,
+          stream: true,
           messages: [
+            { role: 'system', content: this.opts.systemPrompt },
             {
               role: 'user',
               content: `Recent conversation (most recent at bottom):\n\n${conversation}\n\nBased on the last thing the other person said, give the best response to speak next. Output only the response itself — no preamble, no meta-commentary. Adapt length to the question (short for chitchat, long for technical/coding questions).`
@@ -71,8 +70,9 @@ export class ClaudeSuggestionClient extends EventEmitter {
 
       let accumulated = ''
       for await (const event of stream) {
-        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-          accumulated += event.delta.text
+        const delta = event.choices?.[0]?.delta?.content
+        if (delta) {
+          accumulated += delta
           this.emit('suggestion', {
             ...initial,
             text: accumulated,
@@ -87,7 +87,7 @@ export class ClaudeSuggestionClient extends EventEmitter {
         status: 'done'
       })
     } catch (err: any) {
-      if (err?.name === 'AbortError') return
+      if (err?.name === 'AbortError' || controller.signal.aborted) return
       this.emit('suggestion', {
         ...initial,
         text: `Error: ${err?.message ?? 'unknown'}`,

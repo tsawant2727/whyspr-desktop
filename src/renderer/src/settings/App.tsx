@@ -148,17 +148,47 @@ export default function App(): JSX.Element {
             />
           </Field>
           <Field
-            label="Anthropic API Key"
-            hint="Claude API for suggestions. Get one at console.anthropic.com"
+            label="LLM provider"
+            hint="Pick which model powers suggestions + summaries. Anthropic or OpenAI."
           >
-            <input
-              type="password"
-              value={settings.anthropicApiKey}
-              onChange={(e) => update('anthropicApiKey', e.target.value)}
-              placeholder="sk-ant-..."
+            <select
+              value={settings.llmProvider}
+              onChange={(e) =>
+                update('llmProvider', e.target.value as AppSettings['llmProvider'])
+              }
               className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 focus:border-accent outline-none"
-            />
+            >
+              <option value="anthropic">Anthropic (Claude)</option>
+              <option value="openai">OpenAI (GPT)</option>
+            </select>
           </Field>
+          {settings.llmProvider === 'anthropic' ? (
+            <Field
+              label="Anthropic API Key"
+              hint="Claude API for suggestions. Get one at console.anthropic.com"
+            >
+              <input
+                type="password"
+                value={settings.anthropicApiKey}
+                onChange={(e) => update('anthropicApiKey', e.target.value)}
+                placeholder="sk-ant-..."
+                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 focus:border-accent outline-none"
+              />
+            </Field>
+          ) : (
+            <Field
+              label="OpenAI API Key"
+              hint="GPT API for suggestions. Get one at platform.openai.com/api-keys"
+            >
+              <input
+                type="password"
+                value={settings.openaiApiKey}
+                onChange={(e) => update('openaiApiKey', e.target.value)}
+                placeholder="sk-..."
+                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 focus:border-accent outline-none"
+              />
+            </Field>
+          )}
         </section>
 
         <section className="space-y-4">
@@ -176,20 +206,37 @@ export default function App(): JSX.Element {
               <option value="hi">Hindi</option>
             </select>
           </Field>
-          <Field
-            label="Claude model"
-            hint="Haiku 4.5 is fastest and cheapest. Sonnet for higher quality."
-          >
-            <select
-              value={settings.llmModel}
-              onChange={(e) => update('llmModel', e.target.value)}
-              className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 focus:border-accent outline-none"
+          {settings.llmProvider === 'anthropic' ? (
+            <Field
+              label="Claude model"
+              hint="Haiku 4.5 is fastest and cheapest. Sonnet for higher quality."
             >
-              <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (fast)</option>
-              <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (balanced)</option>
-              <option value="claude-opus-4-7">Claude Opus 4.7 (highest quality, slow)</option>
-            </select>
-          </Field>
+              <select
+                value={settings.llmModel}
+                onChange={(e) => update('llmModel', e.target.value)}
+                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 focus:border-accent outline-none"
+              >
+                <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (fast)</option>
+                <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (balanced)</option>
+                <option value="claude-opus-4-7">Claude Opus 4.7 (highest quality, slow)</option>
+              </select>
+            </Field>
+          ) : (
+            <Field
+              label="OpenAI model"
+              hint="gpt-4o-mini is fastest and cheapest. gpt-4o for higher quality."
+            >
+              <select
+                value={settings.openaiModel}
+                onChange={(e) => update('openaiModel', e.target.value)}
+                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 focus:border-accent outline-none"
+              >
+                <option value="gpt-4o-mini">GPT-4o mini (fast, cheap)</option>
+                <option value="gpt-4.1-mini">GPT-4.1 mini (newer, similar)</option>
+                <option value="gpt-4o">GPT-4o (higher quality)</option>
+              </select>
+            </Field>
+          )}
           <Field
             label="Silence before suggesting (ms)"
             hint="How long to wait after patient stops speaking. Lower = more aggressive."

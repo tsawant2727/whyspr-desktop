@@ -1,9 +1,14 @@
+export type LlmProvider = 'anthropic' | 'openai'
+
 export type AppSettings = {
   deepgramApiKey: string
   anthropicApiKey: string
+  openaiApiKey: string
+  llmProvider: LlmProvider
   systemPrompt: string
   language: 'multi' | 'en' | 'hi'
-  llmModel: string
+  llmModel: string // Anthropic model id when llmProvider === 'anthropic'
+  openaiModel: string // OpenAI model id when llmProvider === 'openai'
   suggestionTriggerSilenceMs: number
   // Feature toggles — each user picks what they need
   featureLiveSuggestions: boolean
@@ -73,9 +78,12 @@ Customize this prompt in Settings for your specific use case:
 export const DEFAULT_SETTINGS: AppSettings = {
   deepgramApiKey: '',
   anthropicApiKey: '',
+  openaiApiKey: '',
+  llmProvider: 'anthropic',
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   language: 'multi',
   llmModel: 'claude-haiku-4-5-20251001',
+  openaiModel: 'gpt-4o-mini',
   suggestionTriggerSilenceMs: 1500,
   featureLiveSuggestions: true,
   featureRecordAudio: false,

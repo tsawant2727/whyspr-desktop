@@ -1,6 +1,7 @@
 import { BrowserWindow } from 'electron'
 import { DeepgramStreamingClient } from './stt/deepgram'
 import { ClaudeSuggestionClient } from './llm/claude'
+import { OpenAISuggestionClient } from './llm/openai'
 import { generateSummary } from './llm/summary'
 import { getSettings } from './store/settings'
 import {
@@ -17,11 +18,18 @@ const SAMPLE_RATE = 16000
 export class SessionManager {
   private salesStt: DeepgramStreamingClient | null = null
   private patientStt: DeepgramStreamingClient | null = null
-  private llm: ClaudeSuggestionClient | null = null
+  private llm: ClaudeSuggestionClient | OpenAISuggestionClient | null = null
   private transcript: TranscriptSegment[] = []
   private active = false
   private lastSuggestionAt = 0
-  private readonly minSuggestionGapMs = 2000
+  private readonly minSuggestionGapMs = 600
+  // Fallback timer in case Deepgram drops the utterance-end event after a
+  // patient final transcript — fires the suggestion anyway.
+  private readonly patientFinalFallbackMs = 1500
+  private lastPatientFinalAt = 0
+  private patientFallbackTimer: NodeJS.Timeout | null = null
+  private suggestionInFlight = false
+  private pendingTrigger = false
   private callId: string | null = null
   private callStartedAt = 0
   private recordingPath: string | null = null
@@ -43,12 +51,27 @@ export class SessionManager {
     if (!settings.deepgramApiKey) {
       return { ok: false, error: 'Deepgram API key missing. Open Settings.' }
     }
-    if (settings.featureLiveSuggestions && !settings.anthropicApiKey) {
-      return { ok: false, error: 'Anthropic API key missing (required for live suggestions).' }
+    if (settings.featureLiveSuggestions) {
+      const providerKey =
+        settings.llmProvider === 'openai' ? settings.openaiApiKey : settings.anthropicApiKey
+      if (!providerKey) {
+        const which = settings.llmProvider === 'openai' ? 'OpenAI' : 'Anthropic'
+        return {
+          ok: false,
+          error: `${which} API key missing (required for live suggestions).`
+        }
+      }
     }
 
     this.transcript = []
     this.lastSuggestionAt = 0
+    this.lastPatientFinalAt = 0
+    this.suggestionInFlight = false
+    this.pendingTrigger = false
+    if (this.patientFallbackTimer) {
+      clearTimeout(this.patientFallbackTimer)
+      this.patientFallbackTimer = null
+    }
     this.callId = makeCallId()
     this.callStartedAt = Date.now()
     this.recordingPath = null
@@ -74,13 +97,32 @@ export class SessionManager {
     })
 
     if (settings.featureLiveSuggestions) {
-      this.llm = new ClaudeSuggestionClient({
-        apiKey: settings.anthropicApiKey,
-        model: settings.llmModel,
-        systemPrompt: settings.systemPrompt
-      })
+      this.llm =
+        settings.llmProvider === 'openai'
+          ? new OpenAISuggestionClient({
+              apiKey: settings.openaiApiKey,
+              model: settings.openaiModel,
+              systemPrompt: settings.systemPrompt
+            })
+          : new ClaudeSuggestionClient({
+              apiKey: settings.anthropicApiKey,
+              model: settings.llmModel,
+              systemPrompt: settings.systemPrompt
+            })
+      console.log(
+        `[session] llm provider: ${settings.llmProvider}, model: ${
+          settings.llmProvider === 'openai' ? settings.openaiModel : settings.llmModel
+        }`
+      )
       this.llm.on('suggestion', (sug: Suggestion) => {
         this.broadcast('suggestion:update', sug)
+        if (sug.status === 'done' || sug.status === 'error') {
+          this.suggestionInFlight = false
+          if (this.pendingTrigger) {
+            this.pendingTrigger = false
+            this.maybeTriggerSuggestion()
+          }
+        }
       })
     }
 
@@ -102,6 +144,15 @@ export class SessionManager {
     stt.on('transcript', (seg: TranscriptSegment) => {
       if (seg.isFinal) {
         this.transcript.push(seg)
+        if (seg.speaker === 'patient') {
+          this.lastPatientFinalAt = Date.now()
+          // Fallback: if utterance-end never arrives, trigger after a delay.
+          if (this.patientFallbackTimer) clearTimeout(this.patientFallbackTimer)
+          this.patientFallbackTimer = setTimeout(() => {
+            this.patientFallbackTimer = null
+            this.maybeTriggerSuggestion()
+          }, this.patientFinalFallbackMs)
+        }
         this.broadcast('transcript:update', seg)
       } else {
         this.broadcast('transcript:update', seg)
@@ -110,13 +161,11 @@ export class SessionManager {
 
     stt.on('utterance-end', () => {
       if (speaker !== 'patient') return
-      if (!this.llm) return
-      const now = Date.now()
-      if (now - this.lastSuggestionAt < this.minSuggestionGapMs) return
-      const lastFinal = [...this.transcript].reverse().find((s) => s.isFinal)
-      if (!lastFinal || lastFinal.speaker !== 'patient') return
-      this.lastSuggestionAt = now
-      void this.llm.requestSuggestion(this.transcript)
+      if (this.patientFallbackTimer) {
+        clearTimeout(this.patientFallbackTimer)
+        this.patientFallbackTimer = null
+      }
+      this.maybeTriggerSuggestion()
     })
 
     stt.on('error', (err: any) => {
@@ -125,6 +174,34 @@ export class SessionManager {
         error: `${speaker} stt: ${err?.message ?? 'error'}`
       })
     })
+  }
+
+  /**
+   * Trigger a suggestion if there's fresh patient content since the last one.
+   * If a suggestion is currently streaming, queue exactly one pending trigger.
+   */
+  private maybeTriggerSuggestion(): void {
+    if (!this.llm) return
+    // Only fire if patient has actually said something new since last suggestion.
+    if (this.lastPatientFinalAt <= this.lastSuggestionAt) return
+
+    if (this.suggestionInFlight) {
+      this.pendingTrigger = true
+      return
+    }
+
+    const now = Date.now()
+    const elapsed = now - this.lastSuggestionAt
+    if (elapsed < this.minSuggestionGapMs) {
+      // Re-check after the rate-limit window so we don't drop the trigger entirely.
+      const wait = this.minSuggestionGapMs - elapsed
+      setTimeout(() => this.maybeTriggerSuggestion(), wait)
+      return
+    }
+
+    this.lastSuggestionAt = now
+    this.suggestionInFlight = true
+    void this.llm.requestSuggestion(this.transcript)
   }
 
   pushSystemAudio(chunk: Buffer): void {
@@ -201,16 +278,22 @@ export class SessionManager {
     }
 
     if (settings.featureGenerateSummary) {
-      if (!settings.anthropicApiKey) {
-        console.warn('[session] summary skipped — no Anthropic API key')
+      const summaryKey =
+        settings.llmProvider === 'openai' ? settings.openaiApiKey : settings.anthropicApiKey
+      const summaryModel =
+        settings.llmProvider === 'openai' ? settings.openaiModel : settings.llmModel
+      if (!summaryKey) {
+        const which = settings.llmProvider === 'openai' ? 'OpenAI' : 'Anthropic'
+        console.warn(`[session] summary skipped — no ${which} API key`)
       } else if (this.transcript.length === 0) {
         console.warn('[session] summary skipped — no transcript')
       } else {
         try {
-          console.log('[session] generating summary via Claude…')
+          console.log(`[session] generating summary via ${settings.llmProvider}…`)
           const summaryMd = await generateSummary({
-            apiKey: settings.anthropicApiKey,
-            model: settings.llmModel,
+            provider: settings.llmProvider,
+            apiKey: summaryKey,
+            model: summaryModel,
             transcript: this.transcript,
             meLabel: settings.speakerLabelMe,
             themLabel: settings.speakerLabelThem
