@@ -7,11 +7,14 @@ import {
   nativeImage,
   session as electronSession,
   desktopCapturer,
-  dialog
+  dialog,
+  globalShortcut
 } from 'electron'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 import { createOverlayWindow } from './windows/overlay'
 import { openSettingsWindow } from './windows/settings'
+import { openLoginWindow, closeLoginWindow } from './windows/login'
+import { openBlockedWindow, closeBlockedWindow } from './windows/blocked'
 import { getSettings, updateSettings, applyTemplate } from './store/settings'
 import { SessionManager } from './session'
 import {
@@ -20,6 +23,10 @@ import {
   getRecordingsDir
 } from './storage/recordings'
 import { BRAND } from '../shared/branding'
+import { initWhyspr } from './whyspr'
+import { currentSession, logout as whysprLogout } from './whyspr/auth'
+import { getSnapshot, onState, stop as stopPoller, clearSnapshot } from './whyspr/poller'
+import type { AppState } from '../shared/license'
 
 let overlay: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -33,6 +40,10 @@ function buildTray(): void {
     {
       label: 'Show Overlay',
       click: () => {
+        if (!currentSession()) {
+          openLoginWindow()
+          return
+        }
         if (!overlay || overlay.isDestroyed()) {
           overlay = createOverlayWindow()
         } else {
@@ -48,6 +59,7 @@ function buildTray(): void {
       click: () => session.stop()
     },
     { type: 'separator' },
+    { label: 'Sign out', click: () => signOut() },
     { label: 'Quit', click: () => app.quit() }
   ])
   tray.setContextMenu(menu)
@@ -75,7 +87,16 @@ function registerIpc(): void {
     openSettingsWindow()
   })
 
-  ipcMain.handle('session:start', () => session.start())
+  ipcMain.handle('session:start', () => {
+    // Gate session start on license — if user isn't allowed, route them to
+    // the blocked screen instead of silently letting the meeting begin.
+    const snap = getSnapshot()
+    if (snap.state && !snap.state.allowsAppAccess) {
+      openBlockedWindow()
+      return { ok: false, error: snap.state.message }
+    }
+    return session.start()
+  })
   ipcMain.handle('session:stop', () => {
     session.stop()
     return { ok: true }
@@ -92,6 +113,21 @@ function registerIpc(): void {
   })
   ipcMain.handle('window:minimize-overlay', () => {
     if (overlay && !overlay.isDestroyed()) overlay.minimize()
+    return { ok: true }
+  })
+  ipcMain.handle('window:resize-overlay', (_e, payload: { width: number }) => {
+    if (!overlay || overlay.isDestroyed()) return { ok: false }
+    const bounds = overlay.getBounds()
+    const display = require('electron').screen.getDisplayMatching(bounds)
+    const workArea = display.workArea
+    const rightEdge = bounds.x + bounds.width
+    const newX = Math.max(workArea.x, rightEdge - payload.width)
+    overlay.setBounds({
+      x: newX,
+      y: bounds.y,
+      width: payload.width,
+      height: bounds.height
+    })
     return { ok: true }
   })
 
@@ -142,8 +178,6 @@ function registerIpc(): void {
 
 function registerDisplayMediaHandler(): void {
   // Required for navigator.mediaDevices.getDisplayMedia() to work in Electron 26+.
-  // We auto-pick the primary screen and force system audio loopback so the user
-  // never has to interact with a picker. Works on macOS 13+ and Windows.
   electronSession.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
     try {
       const sources = await desktopCapturer.getSources({
@@ -164,7 +198,87 @@ function registerDisplayMediaHandler(): void {
   })
 }
 
-app.whenReady().then(() => {
+// ─── Window routing based on auth + license state ────────────────────────────
+
+function showOverlay(): void {
+  if (!overlay || overlay.isDestroyed()) {
+    overlay = createOverlayWindow()
+  } else {
+    overlay.show()
+  }
+}
+
+function hideOverlay(): void {
+  if (overlay && !overlay.isDestroyed()) overlay.hide()
+}
+
+function applyRouting(state: AppState | null): void {
+  if (!currentSession()) {
+    hideOverlay()
+    closeBlockedWindow()
+    openLoginWindow()
+    return
+  }
+
+  closeLoginWindow()
+
+  if (state && !state.allowsAppAccess) {
+    hideOverlay()
+    openBlockedWindow()
+    return
+  }
+  if (state && state.requiresUpdate) {
+    hideOverlay()
+    openBlockedWindow()
+    return
+  }
+
+  // Healthy state.
+  closeBlockedWindow()
+  showOverlay()
+}
+
+function signOut(): void {
+  session.stop()
+  stopPoller()
+  whysprLogout()
+  clearSnapshot()
+  applyRouting(null)
+}
+
+/**
+ * Global keyboard shortcut to manually trigger a new suggestion.
+ *
+ * Mac: ⌘+Shift+G  ·  Win/Linux: Ctrl+Shift+G
+ *
+ * Works from anywhere — Zoom, Meet, browser — so the user never has to
+ * alt-tab to the overlay just to ask for a fresh reply.
+ *
+ * Behavior:
+ *   - If no session is active, no-op (avoid surprise side-effects).
+ *   - Otherwise calls SessionManager.requestSuggestion(), which is the same
+ *     code path as the in-overlay "Regenerate" button.
+ *
+ * If registration fails (e.g. another app has the same combo), we log and
+ * carry on — the in-overlay button still works.
+ */
+export const REGENERATE_SHORTCUT = 'CommandOrControl+Shift+G'
+
+function registerGlobalShortcuts(): void {
+  const ok = globalShortcut.register(REGENERATE_SHORTCUT, () => {
+    if (!session.isActive()) return
+    session.requestSuggestion()
+  })
+  if (!ok) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[whyspr] could not register global shortcut "${REGENERATE_SHORTCUT}" — ` +
+        'another app may have it. The in-overlay Regenerate button still works.'
+    )
+  }
+}
+
+app.whenReady().then(async () => {
   electronApp.setAppUserModelId(BRAND.appUserModelId)
 
   app.on('browser-window-created', (_, win) => {
@@ -173,12 +287,20 @@ app.whenReady().then(() => {
 
   registerDisplayMediaHandler()
   registerIpc()
+  await initWhyspr()
   buildTray()
-  overlay = createOverlayWindow()
+  registerGlobalShortcuts()
+
+  // React to every state change in the main process for window routing.
+  // (The renderer windows use the IPC 'license:state' channel separately.)
+  onState((snap) => applyRouting(snap.state))
+  // Initial routing pass — needed because by the time we get here the poller
+  // may or may not have produced a snapshot yet.
+  applyRouting(getSnapshot().state ?? null)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      overlay = createOverlayWindow()
+      applyRouting(getSnapshot().state ?? null)
     }
   })
 })
@@ -186,6 +308,10 @@ app.whenReady().then(() => {
 app.on('window-all-closed', (e: Electron.Event) => {
   // Keep app alive in tray
   e.preventDefault()
+})
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
 })
 
 app.on('before-quit', () => {

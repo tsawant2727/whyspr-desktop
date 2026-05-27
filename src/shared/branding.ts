@@ -25,11 +25,20 @@ export const BRAND = {
   bundleId: 'com.whyspr.app',
   appUserModelId: 'com.whyspr.app',
 
-  // URLs (replace with real ones after domain purchase)
-  websiteUrl: 'https://whyspr.ai',
-  supportEmail: 'support@whyspr.ai',
-  docsUrl: 'https://whyspr.ai/docs',
-  dashboardUrl: 'https://whyspr.ai/dashboard',
+  // URLs — domain not purchased yet, currently hosted on Vercel.
+  // Override at build/dev with WHYSPR_API_URL env var.
+  websiteUrl: 'https://whyspr-web.vercel.app',
+  // Backend API root. For dev set WHYSPR_API_URL=http://localhost:3000 in env.
+  apiBaseUrl: 'https://whyspr-web.vercel.app',
+  // No domain yet → no real support email. UI should link to the /contact
+  // page instead. If you later add a mailbox, set supportEmail here.
+  supportEmail: '',
+  supportUrl: 'https://whyspr-web.vercel.app/contact',
+  docsUrl: 'https://whyspr-web.vercel.app',
+  dashboardUrl: 'https://whyspr-web.vercel.app/dashboard',
+  loginUrl: 'https://whyspr-web.vercel.app/login',
+  signupUrl: 'https://whyspr-web.vercel.app/signup',
+  upgradeUrl: 'https://whyspr-web.vercel.app/dashboard',
 
   // Window titles
   overlayWindowTitle: 'Whyspr',

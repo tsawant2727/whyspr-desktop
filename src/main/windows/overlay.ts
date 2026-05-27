@@ -7,8 +7,10 @@ export function createOverlayWindow(): BrowserWindow {
   const display = screen.getPrimaryDisplay()
   const { width, height } = display.workArea
 
-  const winWidth = 480
-  const winHeight = 680
+  // Roomier defaults — easier reading during live calls. Drawers in the
+  // renderer expand the width further via api.window.resize.
+  const winWidth = 560
+  const winHeight = 800
 
   const win = new BrowserWindow({
     width: winWidth,

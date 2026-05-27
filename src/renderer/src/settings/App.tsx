@@ -2,11 +2,19 @@ import { useEffect, useRef, useState } from 'react'
 import type { AppSettings } from '../../../shared/types'
 import { BRAND } from '../../../shared/branding'
 import { TEMPLATES, type Template } from '../../../shared/templates'
+import {
+  type Playbook,
+  type PlaybookPhase,
+  type PlaybookStep,
+  makePlaybookId,
+  totalStepsInPlaybook
+} from '../../../shared/playbooks'
 
 type SectionId =
   | 'essentials'
   | 'freeguide'
   | 'templates'
+  | 'playbooks'
   | 'apikeys'
   | 'behavior'
   | 'recording'
@@ -18,6 +26,7 @@ const NAV_SECTIONS: { id: SectionId; label: string; icon: string }[] = [
   { id: 'essentials', label: 'Essentials', icon: '⚡' },
   { id: 'freeguide', label: 'Run it free', icon: '💸' },
   { id: 'templates', label: 'Templates', icon: '📋' },
+  { id: 'playbooks', label: 'Playbooks', icon: '📑' },
   { id: 'prompt', label: 'System Prompt', icon: '✏️' },
   { id: 'apikeys', label: 'API Keys', icon: '🔑' },
   { id: 'behavior', label: 'Behavior', icon: '⚙️' },
@@ -409,6 +418,17 @@ export default function App(): JSX.Element {
         </section>
         )}
 
+        {activeSection === 'playbooks' && (
+          <PlaybooksSection
+            playbooks={settings.playbooks ?? []}
+            defaultPlaybookId={settings.defaultPlaybookId ?? ''}
+            onChange={(next, defaultId) => {
+              update('playbooks', next, true)
+              if (defaultId !== undefined) update('defaultPlaybookId', defaultId, true)
+            }}
+          />
+        )}
+
         {activeSection === 'apikeys' && (
         <section className="space-y-4">
           <h2 className="text-sm font-semibold uppercase tracking-wider text-white/60">
@@ -421,7 +441,10 @@ export default function App(): JSX.Element {
             <select
               value={settings.sttProvider}
               onChange={(e) =>
-                update('sttProvider', e.target.value as AppSettings['sttProvider'])
+                // Immediate save (no 600ms debounce) — otherwise clicking
+                // a provider and then "Start" before the debounce flushes
+                // would launch a session against the OLD provider.
+                update('sttProvider', e.target.value as AppSettings['sttProvider'], true)
               }
               className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 focus:border-accent outline-none"
             >
@@ -464,7 +487,8 @@ export default function App(): JSX.Element {
             <select
               value={settings.llmProvider}
               onChange={(e) =>
-                update('llmProvider', e.target.value as AppSettings['llmProvider'])
+                // Immediate save — same race-condition fix as sttProvider.
+                update('llmProvider', e.target.value as AppSettings['llmProvider'], true)
               }
               className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 focus:border-accent outline-none"
             >
@@ -587,11 +611,15 @@ export default function App(): JSX.Element {
           <Field label="Language" hint="Multi handles Hinglish + regional code-switching.">
             <select
               value={settings.language}
-              onChange={(e) => update('language', e.target.value as AppSettings['language'])}
+              onChange={(e) =>
+                // Immediate save — start session right after changing language
+                // would otherwise launch with the OLD language value.
+                update('language', e.target.value as AppSettings['language'], true)
+              }
               className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 focus:border-accent outline-none"
             >
               <option value="multi">Multi (Hindi/English/regional)</option>
-              <option value="en">English (Indian)</option>
+              <option value="en">English (standard)</option>
               <option value="hi">Hindi</option>
             </select>
           </Field>
@@ -969,5 +997,408 @@ function Toggle({
         {hint && <span className="block text-xs text-white/40 mt-0.5">{hint}</span>}
       </span>
     </label>
+  )
+}
+
+// ─── Playbooks section ─────────────────────────────────────────────────────
+
+function PlaybooksSection({
+  playbooks,
+  defaultPlaybookId,
+  onChange
+}: {
+  playbooks: Playbook[]
+  defaultPlaybookId: string
+  onChange: (next: Playbook[], defaultId?: string) => void
+}): JSX.Element {
+  const [editingId, setEditingId] = useState<string | null>(playbooks[0]?.id ?? null)
+  const editing = playbooks.find((p) => p.id === editingId) ?? null
+
+  function patch(updater: (pb: Playbook) => Playbook): void {
+    if (!editing) return
+    const next = playbooks.map((p) =>
+      p.id === editing.id ? { ...updater(p), updatedAtMs: Date.now() } : p
+    )
+    onChange(next)
+  }
+
+  function createNew(): void {
+    const pb: Playbook = {
+      id: makePlaybookId('pb'),
+      name: 'New playbook',
+      description: '',
+      phases: [
+        {
+          id: makePlaybookId('ph'),
+          title: 'Phase 1',
+          steps: [{ id: makePlaybookId('s'), title: 'First step' }]
+        }
+      ],
+      createdAtMs: Date.now(),
+      updatedAtMs: Date.now()
+    }
+    onChange([...playbooks, pb])
+    setEditingId(pb.id)
+  }
+
+  function duplicate(pb: Playbook): void {
+    const copy: Playbook = {
+      ...pb,
+      id: makePlaybookId('pb'),
+      name: `${pb.name} (copy)`,
+      phases: pb.phases.map((ph) => ({
+        ...ph,
+        id: makePlaybookId('ph'),
+        steps: ph.steps.map((s) => ({ ...s, id: makePlaybookId('s') }))
+      })),
+      createdAtMs: Date.now(),
+      updatedAtMs: Date.now()
+    }
+    onChange([...playbooks, copy])
+    setEditingId(copy.id)
+  }
+
+  function remove(pb: Playbook): void {
+    if (!window.confirm(`Delete "${pb.name}"? This can't be undone.`)) return
+    const next = playbooks.filter((p) => p.id !== pb.id)
+    const newDefault =
+      pb.id === defaultPlaybookId ? next[0]?.id ?? '' : defaultPlaybookId
+    onChange(next, newDefault)
+    if (editingId === pb.id) setEditingId(next[0]?.id ?? null)
+  }
+
+  function setDefault(pb: Playbook): void {
+    onChange(playbooks, pb.id)
+  }
+
+  // ── Phase / step helpers (operate on the currently editing playbook) ──
+
+  function addPhase(): void {
+    patch((pb) => ({
+      ...pb,
+      phases: [
+        ...pb.phases,
+        {
+          id: makePlaybookId('ph'),
+          title: `Phase ${pb.phases.length + 1}`,
+          steps: []
+        }
+      ]
+    }))
+  }
+
+  function updatePhase(phaseId: string, p: Partial<PlaybookPhase>): void {
+    patch((pb) => ({
+      ...pb,
+      phases: pb.phases.map((ph) => (ph.id === phaseId ? { ...ph, ...p } : ph))
+    }))
+  }
+
+  function removePhase(phaseId: string): void {
+    if (!window.confirm('Delete this phase and all its steps?')) return
+    patch((pb) => ({ ...pb, phases: pb.phases.filter((ph) => ph.id !== phaseId) }))
+  }
+
+  function movePhase(phaseId: string, dir: -1 | 1): void {
+    patch((pb) => {
+      const idx = pb.phases.findIndex((p) => p.id === phaseId)
+      if (idx < 0) return pb
+      const target = idx + dir
+      if (target < 0 || target >= pb.phases.length) return pb
+      const next = [...pb.phases]
+      ;[next[idx], next[target]] = [next[target], next[idx]]
+      return { ...pb, phases: next }
+    })
+  }
+
+  function addStep(phaseId: string): void {
+    patch((pb) => ({
+      ...pb,
+      phases: pb.phases.map((ph) =>
+        ph.id === phaseId
+          ? {
+              ...ph,
+              steps: [...ph.steps, { id: makePlaybookId('s'), title: 'New step' }]
+            }
+          : ph
+      )
+    }))
+  }
+
+  function updateStep(phaseId: string, stepId: string, p: Partial<PlaybookStep>): void {
+    patch((pb) => ({
+      ...pb,
+      phases: pb.phases.map((ph) =>
+        ph.id === phaseId
+          ? {
+              ...ph,
+              steps: ph.steps.map((s) => (s.id === stepId ? { ...s, ...p } : s))
+            }
+          : ph
+      )
+    }))
+  }
+
+  function removeStep(phaseId: string, stepId: string): void {
+    patch((pb) => ({
+      ...pb,
+      phases: pb.phases.map((ph) =>
+        ph.id === phaseId ? { ...ph, steps: ph.steps.filter((s) => s.id !== stepId) } : ph
+      )
+    }))
+  }
+
+  function moveStep(phaseId: string, stepId: string, dir: -1 | 1): void {
+    patch((pb) => ({
+      ...pb,
+      phases: pb.phases.map((ph) => {
+        if (ph.id !== phaseId) return ph
+        const idx = ph.steps.findIndex((s) => s.id === stepId)
+        if (idx < 0) return ph
+        const target = idx + dir
+        if (target < 0 || target >= ph.steps.length) return ph
+        const next = [...ph.steps]
+        ;[next[idx], next[target]] = [next[target], next[idx]]
+        return { ...ph, steps: next }
+      })
+    }))
+  }
+
+  return (
+    <section className="space-y-4">
+      <div className="flex items-baseline justify-between">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-white/60">
+          Playbooks
+        </h2>
+        <button
+          type="button"
+          onClick={createNew}
+          className="text-xs px-3 py-1.5 rounded-md bg-accent/15 border border-accent/40 text-emerald-300 hover:bg-accent/25"
+        >
+          + New playbook
+        </button>
+      </div>
+      <p className="text-xs text-white/50 -mt-2">
+        Pre-built call flows you can reference during a meeting. Tick steps off as you go.
+        The default one auto-loads in the overlay drawer.
+      </p>
+
+      {playbooks.length === 0 ? (
+        <div className="text-center text-sm text-white/45 py-8 border border-dashed border-white/10 rounded-lg">
+          No playbooks yet — click <span className="text-white">+ New playbook</span> to add one.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4">
+          {/* Sidebar — playbook list */}
+          <div className="space-y-1">
+            {playbooks.map((pb) => {
+              const isEditing = editingId === pb.id
+              const isDefault = defaultPlaybookId === pb.id
+              return (
+                <button
+                  key={pb.id}
+                  type="button"
+                  onClick={() => setEditingId(pb.id)}
+                  className={`w-full text-left px-3 py-2 rounded-md border text-sm transition-colors ${
+                    isEditing
+                      ? 'bg-accent/15 border-accent/50 text-white'
+                      : 'bg-white/5 border-white/10 text-white/80 hover:bg-white/10'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium truncate">{pb.name}</span>
+                    {isDefault && (
+                      <span className="text-[9px] uppercase tracking-wider text-emerald-300 font-bold shrink-0">
+                        default
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-white/40 mt-0.5">
+                    {pb.phases.length} phases · {totalStepsInPlaybook(pb)} steps
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Editor — currently selected playbook */}
+          {editing ? (
+            <div className="rounded-lg border border-white/10 bg-white/[0.02] p-4 space-y-4">
+              <div className="space-y-2">
+                <label className="block">
+                  <span className="block text-[10px] uppercase tracking-wider text-white/55 font-semibold mb-1">
+                    Name
+                  </span>
+                  <input
+                    type="text"
+                    value={editing.name}
+                    onChange={(e) => patch((pb) => ({ ...pb, name: e.target.value }))}
+                    className="w-full bg-white/5 border border-white/10 rounded-md px-3 py-2 text-sm focus:border-accent outline-none"
+                  />
+                </label>
+                <label className="block">
+                  <span className="block text-[10px] uppercase tracking-wider text-white/55 font-semibold mb-1">
+                    Description (optional)
+                  </span>
+                  <input
+                    type="text"
+                    value={editing.description ?? ''}
+                    onChange={(e) => patch((pb) => ({ ...pb, description: e.target.value }))}
+                    placeholder="One-liner about when to use this playbook"
+                    className="w-full bg-white/5 border border-white/10 rounded-md px-3 py-2 text-sm focus:border-accent outline-none"
+                  />
+                </label>
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setDefault(editing)}
+                    disabled={defaultPlaybookId === editing.id}
+                    className="text-xs px-2.5 py-1 rounded-md border border-white/10 text-white/75 hover:bg-white/5 disabled:opacity-40"
+                  >
+                    {defaultPlaybookId === editing.id ? '✓ Default' : 'Set as default'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => duplicate(editing)}
+                    className="text-xs px-2.5 py-1 rounded-md border border-white/10 text-white/75 hover:bg-white/5"
+                  >
+                    Duplicate
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => remove(editing)}
+                    className="text-xs px-2.5 py-1 rounded-md border border-red-500/30 text-red-300 hover:bg-red-500/10"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+
+              {/* Phases */}
+              <div className="space-y-3 pt-2 border-t border-white/5">
+                {editing.phases.map((phase, phaseIdx) => (
+                  <div
+                    key={phase.id}
+                    className="rounded-md border border-white/10 bg-white/[0.02] p-3 space-y-2"
+                  >
+                    <div className="flex items-start gap-2">
+                      <input
+                        type="text"
+                        value={phase.title}
+                        onChange={(e) => updatePhase(phase.id, { title: e.target.value })}
+                        className="flex-1 bg-transparent border-0 px-0 py-1 text-sm font-semibold focus:outline-none"
+                        placeholder="Phase title"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => movePhase(phase.id, -1)}
+                        disabled={phaseIdx === 0}
+                        className="text-xs text-white/40 hover:text-white px-1 disabled:opacity-30"
+                        title="Move up"
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => movePhase(phase.id, 1)}
+                        disabled={phaseIdx === editing.phases.length - 1}
+                        className="text-xs text-white/40 hover:text-white px-1 disabled:opacity-30"
+                        title="Move down"
+                      >
+                        ↓
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removePhase(phase.id)}
+                        className="text-xs text-red-300/70 hover:text-red-300 px-1"
+                        title="Remove phase"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      value={phase.description ?? ''}
+                      onChange={(e) => updatePhase(phase.id, { description: e.target.value })}
+                      placeholder="Optional caption shown under the phase title"
+                      className="w-full bg-white/[0.03] border border-white/10 rounded px-2 py-1 text-xs text-white/70 focus:border-accent outline-none"
+                    />
+
+                    <div className="space-y-2 pl-2 border-l border-white/5">
+                      {phase.steps.map((step, stepIdx) => (
+                        <div key={step.id} className="space-y-1">
+                          <div className="flex items-start gap-2">
+                            <span className="text-white/30 text-xs mt-1.5">•</span>
+                            <input
+                              type="text"
+                              value={step.title}
+                              onChange={(e) =>
+                                updateStep(phase.id, step.id, { title: e.target.value })
+                              }
+                              className="flex-1 bg-white/[0.03] border border-white/10 rounded px-2 py-1.5 text-sm focus:border-accent outline-none"
+                              placeholder="Step title"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => moveStep(phase.id, step.id, -1)}
+                              disabled={stepIdx === 0}
+                              className="text-xs text-white/40 hover:text-white px-1 disabled:opacity-30"
+                            >
+                              ↑
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => moveStep(phase.id, step.id, 1)}
+                              disabled={stepIdx === phase.steps.length - 1}
+                              className="text-xs text-white/40 hover:text-white px-1 disabled:opacity-30"
+                            >
+                              ↓
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => removeStep(phase.id, step.id)}
+                              className="text-xs text-red-300/70 hover:text-red-300 px-1"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                          <textarea
+                            value={step.details ?? ''}
+                            onChange={(e) =>
+                              updateStep(phase.id, step.id, { details: e.target.value })
+                            }
+                            rows={2}
+                            placeholder="Optional details / script / cue (shown under the step)"
+                            className="ml-5 w-[calc(100%-1.25rem)] bg-white/[0.02] border border-white/5 rounded px-2 py-1.5 text-xs text-white/65 focus:border-accent outline-none resize-y"
+                          />
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => addStep(phase.id)}
+                        className="ml-5 text-xs text-emerald-300/80 hover:text-emerald-300 mt-1"
+                      >
+                        + Add step
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={addPhase}
+                  className="text-xs px-3 py-1.5 rounded-md border border-white/10 text-white/75 hover:bg-white/5"
+                >
+                  + Add phase
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-dashed border-white/10 p-6 text-center text-sm text-white/45">
+              Pick a playbook on the left to edit.
+            </div>
+          )}
+        </div>
+      )}
+    </section>
   )
 }

@@ -42,7 +42,12 @@ export async function startAudioCapture(
   try {
     micStream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        echoCancellation: false,
+        // Echo cancellation removes audio coming back through the mic that
+        // matches what's playing on the speakers — fixes the "patient's
+        // voice leaks into the 'You' transcript" bug when the user is on
+        // laptop speakers (no headphones). Required for accurate speaker
+        // labelling. Headphones are still ideal; this is the software safety net.
+        echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true
       }

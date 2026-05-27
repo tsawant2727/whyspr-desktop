@@ -1,3 +1,5 @@
+import { DEFAULT_PLAYBOOKS, DEFAULT_TELECONSULTATION_PLAYBOOK, type Playbook } from './playbooks'
+
 export type LlmProvider = 'anthropic' | 'openai' | 'custom'
 
 export type SttProvider = 'deepgram' | 'groq'
@@ -39,6 +41,12 @@ export type AppSettings = {
   customRecordingsDir: string
   // Last applied template ID (empty = none, user is in custom mode)
   activeTemplateId: string
+  // Call-flow playbooks — structured checklists shown in the overlay drawer
+  // during a live session.
+  playbooks: Playbook[]
+  // Which playbook to load by default when a session starts. Empty = first
+  // playbook in the list, or none if the list is empty.
+  defaultPlaybookId: string
 }
 
 export type TranscriptSegment = {
@@ -118,7 +126,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   speakerLabelMe: 'You',
   speakerLabelThem: 'Other',
   customRecordingsDir: '',
-  activeTemplateId: ''
+  activeTemplateId: '',
+  // Seed with the CME TeleConsultation playbook so first-time users see a
+  // realistic example. They can edit / delete it from Settings.
+  playbooks: DEFAULT_PLAYBOOKS,
+  defaultPlaybookId: DEFAULT_TELECONSULTATION_PLAYBOOK.id
 }
 
 export type CallArtifacts = {

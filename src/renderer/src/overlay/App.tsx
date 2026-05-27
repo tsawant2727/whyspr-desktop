@@ -7,26 +7,72 @@ import type {
 } from '../../../shared/types'
 import { BRAND } from '../../../shared/branding'
 import { startAudioCapture, type AudioCaptureHandle } from '../audio-capture'
+import { LicenseBanner } from './LicenseBanner'
+import { PlaybookDrawer } from './PlaybookDrawer'
+
+/**
+ * A Q+A pair: the transcript snippet that triggered the AI, paired with
+ * the suggested reply. We snapshot the question text here so it survives
+ * the 50-segment rolling buffer in `transcript`.
+ */
+type QAPair = {
+  /** Stable key for React — matches the underlying suggestion.id. */
+  id: string
+  question: {
+    text: string
+    speaker: TranscriptSegment['speaker']
+    timestampMs: number
+  } | null
+  suggestion: Suggestion
+}
+
+/** How many Q+A pairs we show at once (current + N-1 history). */
+const MAX_QA_PAIRS = 4
+
+/**
+ * Display label for the global regenerate shortcut, platform-aware.
+ * Must stay in sync with REGENERATE_SHORTCUT in main/index.ts
+ * (currently CommandOrControl+Shift+G).
+ */
+const shortcutLabel: string =
+  typeof window !== 'undefined' &&
+  // electronAPI exposes process info via the preload bridge
+  (window.electron as { process?: { platform?: string } } | undefined)?.process
+    ?.platform === 'darwin'
+    ? '⌘⇧G'
+    : 'Ctrl+⇧+G'
 
 export default function App(): JSX.Element {
   const [active, setActive] = useState(false)
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [suggestion, setSuggestion] = useState<Suggestion | null>(null)
-  // Last 2 fully-streamed suggestions, newest first. Lets the rep still see the
-  // previous reply when a new one starts generating.
-  const [previousSuggestions, setPreviousSuggestions] = useState<Suggestion[]>([])
+  // Q+A history, newest first. qaPairs[0] = current suggestion.
+  // Older entries (index 1..3) shown smaller below as recent history so the rep
+  // can scroll back through the last few exchanges.
+  const [qaPairs, setQaPairs] = useState<QAPair[]>([])
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [finalizing, setFinalizing] = useState(false)
   const [lastCallArtifacts, setLastCallArtifacts] = useState<CallArtifacts | null>(null)
   const [showTranscript, setShowTranscript] = useState(false)
   const [showNotes, setShowNotes] = useState(false)
+  const [showPlaybook, setShowPlaybook] = useState(false)
   const [notesDraft, setNotesDraft] = useState('')
   const [transcript, setTranscript] = useState<TranscriptSegment[]>([])
   const [interim, setInterim] = useState<TranscriptSegment | null>(null)
   const audioRef = useRef<AudioCaptureHandle | null>(null)
   const transcriptEndRef = useRef<HTMLDivElement | null>(null)
   const notesSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Mirror of transcript so the suggestion IPC handler (registered once at
+  // mount) can look up the triggering segment without closing over a stale
+  // value of the transcript state.
+  const transcriptRef = useRef<TranscriptSegment[]>([])
+  useEffect(() => {
+    transcriptRef.current = transcript
+  }, [transcript])
+
+  // Derived: current suggestion (for copy / status helpers).
+  const currentPair = qaPairs[0] ?? null
+  const suggestion = currentPair?.suggestion ?? null
 
   useEffect(() => {
     void window.api.settings.get().then((s) => {
@@ -45,12 +91,40 @@ export default function App(): JSX.Element {
       }
     })
     const off2 = window.api.on.suggestion((sug) => {
-      setSuggestion((prev) => {
-        // New suggestion id → archive the previous one (if any) into history.
-        if (prev && prev.id !== sug.id && prev.text) {
-          setPreviousSuggestions((hist) => [prev, ...hist].slice(0, 2))
+      setQaPairs((prev) => {
+        // Dedupe by the transcript segment that triggered this suggestion.
+        // Streaming updates AND manual regenerates share the same trigger,
+        // so they update the existing pair in place — the user never sees
+        // a phantom-duplicate question with two different answers.
+        const triggerKey = sug.triggeredByTranscriptId
+        if (triggerKey) {
+          const idx = prev.findIndex(
+            (p) => p.suggestion.triggeredByTranscriptId === triggerKey
+          )
+          if (idx >= 0) {
+            const next = [...prev]
+            next[idx] = { ...next[idx], id: sug.id, suggestion: sug }
+            return next
+          }
         }
-        return sug
+        // New exchange — snapshot the question from the live transcript so
+        // it persists even after the segment scrolls off the buffer.
+        const triggerSeg =
+          triggerKey != null
+            ? transcriptRef.current.find((t) => t.id === triggerKey) ?? null
+            : null
+        const fresh: QAPair = {
+          id: sug.id,
+          question: triggerSeg
+            ? {
+                text: triggerSeg.text,
+                speaker: triggerSeg.speaker,
+                timestampMs: triggerSeg.timestampMs
+              }
+            : null,
+          suggestion: sug
+        }
+        return [fresh, ...prev].slice(0, MAX_QA_PAIRS)
       })
     })
     const off3 = window.api.on.sessionStatus((s) => {
@@ -83,6 +157,18 @@ export default function App(): JSX.Element {
     }
   }, [transcript.length, interim, showTranscript])
 
+  // Widen the overlay when side panels are open. Three independent drawers:
+  // Notes (left edge), Transcript (left, stacks right of Notes when both
+  // open), Playbook (right edge). Each is 360px. Suggestion area always
+  // gets the full base width regardless of which drawers are open.
+  useEffect(() => {
+    const base = 560
+    const drawerWidth = 360
+    const openCount =
+      (showNotes ? 1 : 0) + (showTranscript ? 1 : 0) + (showPlaybook ? 1 : 0)
+    void window.api.window.resize(base + drawerWidth * openCount)
+  }, [showNotes, showTranscript, showPlaybook])
+
   async function refreshSettings(): Promise<AppSettings | null> {
     const s = await window.api.settings.get()
     setSettings(s)
@@ -93,8 +179,7 @@ export default function App(): JSX.Element {
     setError(null)
     setStarting(true)
     setLastCallArtifacts(null)
-    setSuggestion(null)
-    setPreviousSuggestions([])
+    setQaPairs([])
     setTranscript([])
     setInterim(null)
     try {
@@ -190,6 +275,7 @@ export default function App(): JSX.Element {
   return (
     <div className="h-full w-full p-3">
       <div className="relative h-full w-full flex flex-col rounded-2xl bg-panel backdrop-blur-xl border border-white/10 shadow-2xl overflow-hidden">
+        <LicenseBanner />
         <header className="draggable flex items-center justify-between px-5 py-3 border-b border-white/10">
           <div className="flex items-center gap-2.5">
             <span
@@ -212,6 +298,11 @@ export default function App(): JSX.Element {
               on={showNotes}
               hasNotes={notesDraft.trim().length > 0}
               onChange={setShowNotes}
+            />
+            <PlaybookToggle
+              on={showPlaybook}
+              hasPlaybook={(settings?.playbooks?.length ?? 0) > 0}
+              onChange={setShowPlaybook}
             />
             <TranscriptToggle
               on={showTranscript}
@@ -258,6 +349,17 @@ export default function App(): JSX.Element {
           </div>
         </header>
 
+        {/* Content area shifts to make room for whichever drawers are open
+            so the suggestion never gets overlapped. Drawers are absolutely
+            positioned siblings; this wrapper just pads itself accordingly. */}
+        <div
+          className="flex-1 flex flex-col overflow-hidden transition-[padding] duration-200"
+          style={{
+            paddingLeft:
+              (showNotes ? 360 : 0) + (showTranscript ? 360 : 0),
+            paddingRight: showPlaybook ? 360 : 0
+          }}
+        >
         {error && (
           <div className="px-4 py-2 bg-danger/20 border-b border-danger/30 text-xs text-red-200">
             {error}
@@ -352,10 +454,11 @@ export default function App(): JSX.Element {
         )}
 
         {liveSuggestionsEnabled && (
+          // Suggestion now always takes full vertical. Transcript no longer
+          // shrinks this section — it renders as a bottom slide-up drawer
+          // overlaid on top.
           <section
-            className={`no-drag flex flex-col px-5 py-4 overflow-hidden ${
-              showTranscript ? 'flex-[3]' : 'flex-1'
-            }`}
+            className="no-drag flex flex-col px-5 py-5 overflow-hidden flex-1"
           >
             <div className="flex items-center justify-between mb-3 shrink-0">
               <span className="text-xs uppercase tracking-wider text-accent/90 font-semibold">
@@ -365,9 +468,13 @@ export default function App(): JSX.Element {
                 <button
                   onClick={handleManualSuggest}
                   disabled={!active}
-                  className="text-xs text-white/70 hover:text-white px-2.5 py-1 rounded-md hover:bg-white/10 disabled:opacity-40"
+                  title={`Regenerate suggestion (${shortcutLabel})`}
+                  className="text-xs text-white/70 hover:text-white px-2.5 py-1 rounded-md hover:bg-white/10 disabled:opacity-40 inline-flex items-center gap-1.5"
                 >
-                  Regenerate
+                  <span>Regenerate</span>
+                  <kbd className="inline-flex items-center px-1.5 py-px rounded border border-white/20 bg-white/[0.06] text-[10px] font-mono text-white/70 leading-none">
+                    {shortcutLabel}
+                  </kbd>
                 </button>
                 {suggestion?.text && (
                   <button
@@ -380,65 +487,27 @@ export default function App(): JSX.Element {
               </div>
             </div>
             <div className="flex-1 overflow-y-auto space-y-3">
-              <SuggestionBox
-                text={suggestion?.text}
-                status={suggestion?.status}
+              <QAPairCard
+                pair={currentPair}
                 active={active}
-                themLabel={settings?.speakerLabelThem ?? 'the other side'}
+                themLabel={settings?.speakerLabelThem ?? 'Them'}
+                meLabel={settings?.speakerLabelMe ?? 'You'}
               />
-              {previousSuggestions.length > 0 && (
+              {qaPairs.length > 1 && (
                 <div className="space-y-2 pt-1">
                   <div className="text-[10px] uppercase tracking-wider text-white/40 font-semibold px-1">
-                    Previous
+                    Recent exchanges
                   </div>
-                  {previousSuggestions.map((s) => (
-                    <PreviousSuggestion key={s.id} suggestion={s} />
+                  {qaPairs.slice(1).map((p) => (
+                    <PreviousQAPair
+                      key={p.id}
+                      pair={p}
+                      themLabel={settings?.speakerLabelThem ?? 'Them'}
+                      meLabel={settings?.speakerLabelMe ?? 'You'}
+                    />
                   ))}
                 </div>
               )}
-            </div>
-          </section>
-        )}
-
-        {showTranscript && (
-          <section
-            className={`no-drag flex flex-col overflow-hidden ${
-              liveSuggestionsEnabled ? 'flex-[2] border-t border-white/10' : 'flex-1'
-            }`}
-          >
-            <div className="flex items-center justify-between px-5 pt-3 pb-2 shrink-0">
-              <span className="text-xs uppercase tracking-wider text-white/50 font-semibold">
-                Transcript
-              </span>
-              <button
-                onClick={() => setShowTranscript(false)}
-                className="text-[10px] text-white/40 hover:text-white px-1.5 py-0.5 rounded hover:bg-white/10"
-                title="Hide transcript"
-              >
-                Hide
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto px-5 pb-3 text-sm space-y-2.5">
-              {transcript.length === 0 && !interim && (
-                <div className="text-white/30 italic">Conversation will show here…</div>
-              )}
-              {transcript.map((seg) => (
-                <TranscriptLine
-                  key={seg.id}
-                  seg={seg}
-                  meLabel={settings?.speakerLabelMe ?? 'You'}
-                  themLabel={settings?.speakerLabelThem ?? 'Other'}
-                />
-              ))}
-              {interim && (
-                <TranscriptLine
-                  seg={interim}
-                  meLabel={settings?.speakerLabelMe ?? 'You'}
-                  themLabel={settings?.speakerLabelThem ?? 'Other'}
-                  interim
-                />
-              )}
-              <div ref={transcriptEndRef} />
             </div>
           </section>
         )}
@@ -460,10 +529,63 @@ export default function App(): JSX.Element {
             </button>
           </section>
         )}
+        </div>
 
-        {/* Slide-in notes panel — covers overlay content from the left when open */}
+        {/* Transcript — slides in from the LEFT, mirror of notes. Stacks
+            to the right of notes when both are open. Positioned outside
+            the padded content wrapper so it isn't clipped by overflow. */}
         <div
-          className={`absolute inset-y-0 left-0 w-full flex flex-col bg-panel/95 backdrop-blur-xl border-r border-white/10 transition-transform duration-200 ease-out z-20 ${
+          className={`absolute top-[52px] bottom-0 w-[360px] flex flex-col bg-panel/95 backdrop-blur-xl border-r border-white/10 transition-all duration-200 ease-out z-20 ${
+            showTranscript ? 'translate-x-0' : '-translate-x-full'
+          } ${showNotes ? 'left-[360px]' : 'left-0'}`}
+        >
+          <div className="flex items-center justify-between px-5 py-3 border-b border-white/10 shrink-0">
+            <div className="flex items-center gap-2">
+              <span className="text-base">💬</span>
+              <span className="text-sm font-semibold tracking-wide">Transcript</span>
+              {interim && (
+                <span className="text-[10px] text-accent/80 inline-flex items-center gap-1 ml-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+                  live
+                </span>
+              )}
+            </div>
+            <button
+              onClick={() => setShowTranscript(false)}
+              className="text-white/55 hover:text-white hover:bg-white/10 rounded w-6 h-6 flex items-center justify-center text-base leading-none"
+              title="Close transcript"
+            >
+              ×
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto px-5 py-3 text-sm space-y-2.5">
+            {transcript.length === 0 && !interim && (
+              <div className="text-white/30 italic">Conversation will show here…</div>
+            )}
+            {transcript.map((seg) => (
+              <TranscriptLine
+                key={seg.id}
+                seg={seg}
+                meLabel={settings?.speakerLabelMe ?? 'You'}
+                themLabel={settings?.speakerLabelThem ?? 'Other'}
+              />
+            ))}
+            {interim && (
+              <TranscriptLine
+                seg={interim}
+                meLabel={settings?.speakerLabelMe ?? 'You'}
+                themLabel={settings?.speakerLabelThem ?? 'Other'}
+                interim
+              />
+            )}
+            <div ref={transcriptEndRef} />
+          </div>
+        </div>
+
+        {/* Side-panel notes — slides in from the left below header. Suggestion
+            stays visible on the right (window auto-widens via api.window.resize). */}
+        <div
+          className={`absolute top-[52px] bottom-0 left-0 w-[360px] flex flex-col bg-panel/95 backdrop-blur-xl border-r border-white/10 transition-transform duration-200 ease-out z-20 ${
             showNotes ? 'translate-x-0' : '-translate-x-full'
           }`}
         >
@@ -499,8 +621,52 @@ export default function App(): JSX.Element {
             </div>
           </div>
         </div>
+
+        {/* Side-panel playbook — slides in from the right (mirror of notes).
+            Pure local state — ticks reset when this component unmounts or
+            when the user picks a different playbook. */}
+        <div
+          className={`absolute top-[52px] bottom-0 right-0 w-[360px] transition-transform duration-200 ease-out z-20 ${
+            showPlaybook ? 'translate-x-0' : 'translate-x-full'
+          }`}
+        >
+          <PlaybookDrawer
+            playbooks={settings?.playbooks ?? []}
+            initialActiveId={settings?.defaultPlaybookId ?? ''}
+            onClose={() => setShowPlaybook(false)}
+          />
+        </div>
       </div>
     </div>
+  )
+}
+
+function PlaybookToggle({
+  on,
+  hasPlaybook,
+  onChange
+}: {
+  on: boolean
+  hasPlaybook: boolean
+  onChange: (v: boolean) => void
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!on)}
+      title="Playbook — call-flow checklist"
+      className={`text-xs px-2 py-1 rounded inline-flex items-center gap-1 transition-colors ${
+        on
+          ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-500/40'
+          : 'text-white/60 hover:text-white hover:bg-white/10 border border-transparent'
+      }`}
+    >
+      <span>📋</span>
+      <span className="hidden sm:inline">Playbook</span>
+      {hasPlaybook && !on && (
+        <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400/70" />
+      )}
+    </button>
   )
 }
 
@@ -605,42 +771,27 @@ function TranscriptLine({
   )
 }
 
-function PreviousSuggestion({ suggestion }: { suggestion: Suggestion }): JSX.Element {
-  const ageS = Math.max(1, Math.round((Date.now() - suggestion.createdAtMs) / 1000))
-  const cleaned = stripPreamble(suggestion.text)
-  return (
-    <div className="rounded-lg bg-white/5 border border-white/10 p-3 text-sm leading-relaxed text-white/70">
-      <div className="flex items-center justify-between mb-1">
-        <span className="text-[10px] uppercase tracking-wider text-white/40">
-          {ageS}s ago
-        </span>
-        <button
-          onClick={() => navigator.clipboard.writeText(cleaned).catch(() => undefined)}
-          className="text-[10px] text-white/40 hover:text-white px-1.5 py-0.5 rounded hover:bg-white/10"
-        >
-          Copy
-        </button>
-      </div>
-      <div className="whitespace-pre-wrap">{cleaned}</div>
-    </div>
-  )
-}
-
-function SuggestionBox({
-  text,
-  status,
+/**
+ * The big card at the top: the current question paired with its suggested
+ * reply. Question on top (so the rep can verify "yes, this is what they
+ * just asked"), answer below.
+ */
+function QAPairCard({
+  pair,
   active,
-  themLabel
+  themLabel,
+  meLabel
 }: {
-  text?: string
-  status?: 'streaming' | 'done' | 'error'
+  pair: QAPair | null
   active: boolean
   themLabel: string
+  meLabel: string
 }): JSX.Element {
-  if (!text) {
+  // Empty state: no exchange yet.
+  if (!pair) {
     return (
-      <div className="min-h-[200px] rounded-xl bg-accent/10 border border-accent/40 p-6 text-lg leading-relaxed text-emerald-50 shadow-inner flex items-center">
-        <span className="text-white/40 italic font-normal">
+      <div className="min-h-[260px] rounded-2xl bg-accent/10 border border-accent/40 p-8 text-lg leading-relaxed text-emerald-50 shadow-inner flex items-center justify-center">
+        <span className="text-white/40 italic font-normal text-center">
           {active
             ? `Listening… suggestions appear when ${themLabel} speaks.`
             : 'Press Start to begin.'}
@@ -648,14 +799,118 @@ function SuggestionBox({
       </div>
     )
   }
+
+  const { question, suggestion } = pair
+  const isStreaming = suggestion.status === 'streaming'
+  // We display the same question label whether the original speaker was
+  // patient/sales/unknown — what matters is "who asked", which in the
+  // overlay's mental model is always `themLabel` (the other side). If the
+  // segment was tagged as `sales`, fall back to the meLabel.
+  const askedByLabel =
+    question?.speaker === 'sales' ? meLabel : themLabel
+
   return (
-    <div className="min-h-[200px] rounded-xl bg-accent/10 border border-accent/40 p-6 text-emerald-50 shadow-inner">
-      <RichSuggestionContent text={text} />
-      {status === 'streaming' && (
-        <span className="ml-1 inline-block w-2.5 h-5 bg-emerald-300 animate-pulse align-middle rounded-sm" />
-      )}
+    <div className="min-h-[260px] rounded-2xl bg-accent/10 border border-accent/40 shadow-inner overflow-hidden">
+      {/* Question section */}
+      <div className="px-6 py-4 border-b border-emerald-500/20 bg-black/20">
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="text-[10px] uppercase tracking-wider text-emerald-300/80 font-bold">
+            {question ? `${askedByLabel} asked` : 'New exchange'}
+          </span>
+          <span className="text-[10px] text-white/45">
+            {formatPairAge(suggestion.createdAtMs)}
+          </span>
+        </div>
+        <div className="text-[15px] text-white/90 leading-relaxed">
+          {question?.text ? (
+            <>&quot;{question.text}&quot;</>
+          ) : (
+            <span className="italic text-white/40">
+              (question scrolled off — see transcript for context)
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Answer section */}
+      <div className="px-6 py-5 text-emerald-50">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[10px] uppercase tracking-wider text-accent font-bold">
+            ✨ Suggested reply
+          </span>
+          {isStreaming && (
+            <span className="inline-flex items-center gap-1 text-[10px] text-emerald-300/80 font-semibold">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse" />
+              generating…
+            </span>
+          )}
+        </div>
+        {suggestion.text ? (
+          <>
+            <RichSuggestionContent text={suggestion.text} />
+            {isStreaming && (
+              <span className="ml-1 inline-block w-2.5 h-5 bg-emerald-300 animate-pulse align-middle rounded-sm" />
+            )}
+          </>
+        ) : (
+          <span className="text-white/40 italic">
+            Thinking…
+          </span>
+        )}
+      </div>
     </div>
   )
+}
+
+/**
+ * Compact card for older exchanges. Same Q+A layout, dimmer styling so the
+ * eye lands on the current pair first.
+ */
+function PreviousQAPair({
+  pair,
+  themLabel,
+  meLabel
+}: {
+  pair: QAPair
+  themLabel: string
+  meLabel: string
+}): JSX.Element {
+  const { question, suggestion } = pair
+  const cleaned = stripPreamble(suggestion.text)
+  const askedByLabel = question?.speaker === 'sales' ? meLabel : themLabel
+  return (
+    <div className="rounded-lg bg-white/5 border border-white/10 p-3 text-sm leading-relaxed text-white/70">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-[10px] uppercase tracking-wider text-white/40 font-semibold">
+          {question ? `${askedByLabel} asked` : 'Exchange'}
+        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-white/35">
+            {formatPairAge(suggestion.createdAtMs)}
+          </span>
+          <button
+            onClick={() => navigator.clipboard.writeText(cleaned).catch(() => undefined)}
+            className="text-[10px] text-white/40 hover:text-white px-1.5 py-0.5 rounded hover:bg-white/10"
+          >
+            Copy reply
+          </button>
+        </div>
+      </div>
+      {question?.text && (
+        <div className="text-xs text-white/55 italic mb-1.5 line-clamp-2">
+          &quot;{question.text}&quot;
+        </div>
+      )}
+      <div className="whitespace-pre-wrap text-white/80">{cleaned}</div>
+    </div>
+  )
+}
+
+function formatPairAge(createdAtMs: number): string {
+  const s = Math.max(1, Math.round((Date.now() - createdAtMs) / 1000))
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60)
+  return `${m}m ago`
 }
 
 /**

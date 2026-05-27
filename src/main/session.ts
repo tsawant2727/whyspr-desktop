@@ -23,12 +23,25 @@ export class SessionManager {
   private transcript: TranscriptSegment[] = []
   private active = false
   private lastSuggestionAt = 0
-  private readonly minSuggestionGapMs = 600
-  // Fallback timer in case Deepgram drops the utterance-end event after a
-  // patient final transcript — fires the suggestion anyway.
-  private readonly patientFinalFallbackMs = 1500
+  // Wall-clock time when the most recent suggestion FINISHED streaming.
+  // Cooldown is measured from completion, not from fire — so a slow stream
+  // doesn't eat into the "let the user read" pause.
+  private lastSuggestionCompletedAt = 0
+  // Required quiet time AFTER a suggestion finishes streaming before we'll
+  // generate a new one. Combined with `silenceMs`, this puts a practical
+  // floor of ~6-7 seconds between suggestions in continuous conversation —
+  // enough breathing room to actually read the previous reply.
+  private readonly cooldownAfterCompletedMs = 4000
+  // Silence-coalesce: wait this many ms after the LAST patient final before
+  // firing. Resets on every new final, so rapid-fire questions get bundled
+  // into one Claude call. Default mirrors the user-tunable setting
+  // (`suggestionTriggerSilenceMs`). 2500ms is a comfortable conversational
+  // pause; 1500ms feels snappier, 3000ms is good for slow speakers.
+  private readonly defaultSilenceMs = 2500
+  private silenceMs = 2500
   private lastPatientFinalAt = 0
-  private patientFallbackTimer: NodeJS.Timeout | null = null
+  private silenceTimer: NodeJS.Timeout | null = null
+  private silenceFireAt = 0
   private suggestionInFlight = false
   private pendingTrigger = false
   private callId: string | null = null
@@ -82,13 +95,18 @@ export class SessionManager {
 
     this.transcript = []
     this.lastSuggestionAt = 0
+    this.lastSuggestionCompletedAt = 0
     this.lastPatientFinalAt = 0
     this.suggestionInFlight = false
     this.pendingTrigger = false
-    if (this.patientFallbackTimer) {
-      clearTimeout(this.patientFallbackTimer)
-      this.patientFallbackTimer = null
-    }
+    // Pull silence window from settings (user-tunable). Fall back to default
+    // if not set or out of plausible range.
+    const configuredMs = settings.suggestionTriggerSilenceMs
+    this.silenceMs =
+      typeof configuredMs === 'number' && configuredMs >= 200 && configuredMs <= 10_000
+        ? configuredMs
+        : this.defaultSilenceMs
+    this.cancelSilenceTimer()
     this.callId = makeCallId()
     this.callStartedAt = Date.now()
     this.recordingPath = null
@@ -135,19 +153,22 @@ export class SessionManager {
           apiKey: settings.customApiKey,
           model: settings.customModel,
           systemPrompt: settings.systemPrompt,
-          baseURL: settings.customBaseUrl
+          baseURL: settings.customBaseUrl,
+          language: settings.language
         })
       } else if (settings.llmProvider === 'openai') {
         this.llm = new OpenAISuggestionClient({
           apiKey: settings.openaiApiKey,
           model: settings.openaiModel,
-          systemPrompt: settings.systemPrompt
+          systemPrompt: settings.systemPrompt,
+          language: settings.language
         })
       } else {
         this.llm = new ClaudeSuggestionClient({
           apiKey: settings.anthropicApiKey,
           model: settings.llmModel,
-          systemPrompt: settings.systemPrompt
+          systemPrompt: settings.systemPrompt,
+          language: settings.language
         })
       }
       const usedModel =
@@ -161,8 +182,11 @@ export class SessionManager {
         this.broadcast('suggestion:update', sug)
         if (sug.status === 'done' || sug.status === 'error') {
           this.suggestionInFlight = false
+          this.lastSuggestionCompletedAt = Date.now()
           if (this.pendingTrigger) {
             this.pendingTrigger = false
+            // Don't fire instantly — go through the same gating so the
+            // cooldown-after-completion still applies.
             this.maybeTriggerSuggestion()
           }
         }
@@ -192,13 +216,12 @@ export class SessionManager {
         this.transcript.push(seg)
         if (seg.speaker === 'patient') {
           this.lastPatientFinalAt = Date.now()
-          console.log(`[session] patient FINAL: "${seg.text}" — arming fallback timer`)
-          if (this.patientFallbackTimer) clearTimeout(this.patientFallbackTimer)
-          this.patientFallbackTimer = setTimeout(() => {
-            this.patientFallbackTimer = null
-            console.log('[session] fallback timer fired (utterance-end missed)')
-            this.maybeTriggerSuggestion()
-          }, this.patientFinalFallbackMs)
+          console.log(
+            `[session] patient FINAL: "${seg.text}" — debouncing for ${this.silenceMs}ms`
+          )
+          // Coalesce rapid-fire questions: every new final RESETS the silence
+          // timer, so we wait until the speaker actually pauses before firing.
+          this.scheduleSilenceTimer(this.silenceMs)
         }
         this.broadcast('transcript:update', seg)
       } else {
@@ -207,13 +230,15 @@ export class SessionManager {
     })
 
     stt.on('utterance-end', () => {
+      // Intentionally a no-op now. Earlier we shortened the silence timer
+      // to 300ms here — but Deepgram fires utterance-end after every
+      // short fragment, which made the assistant generate a fresh
+      // suggestion every 2-3 seconds. Pure silence-coalesce (full
+      // `silenceMs` wait, reset on each new final) feels much calmer and
+      // still responds within ~2s of a real conversational pause.
       if (speaker !== 'patient') return
-      if (this.patientFallbackTimer) {
-        clearTimeout(this.patientFallbackTimer)
-        this.patientFallbackTimer = null
-      }
-      console.log('[session] patient utterance-end → maybeTrigger')
-      this.maybeTriggerSuggestion()
+      // eslint-disable-next-line no-console
+      console.log('[session] patient utterance-end (ignored — waiting for silence)')
     })
 
     stt.on('error', (err: any) => {
@@ -222,6 +247,29 @@ export class SessionManager {
         error: `${speaker} stt: ${err?.message ?? 'error'}`
       })
     })
+  }
+
+  private cancelSilenceTimer(): void {
+    if (this.silenceTimer) {
+      clearTimeout(this.silenceTimer)
+      this.silenceTimer = null
+    }
+    this.silenceFireAt = 0
+  }
+
+  /**
+   * (Re)schedule the silence timer to fire `delayMs` from now. Replaces any
+   * existing schedule.
+   */
+  private scheduleSilenceTimer(delayMs: number): void {
+    if (this.silenceTimer) clearTimeout(this.silenceTimer)
+    this.silenceFireAt = Date.now() + delayMs
+    this.silenceTimer = setTimeout(() => {
+      this.silenceTimer = null
+      this.silenceFireAt = 0
+      console.log('[session] silence timer fired → maybeTrigger')
+      this.maybeTriggerSuggestion()
+    }, delayMs)
   }
 
   /**
@@ -246,11 +294,15 @@ export class SessionManager {
       return
     }
 
+    // Cooldown: measured from the moment the previous suggestion FINISHED
+    // streaming (not from when it started). This gives the user a real
+    // "read it before a new one shows up" pause regardless of how slow the
+    // LLM streamed back.
     const now = Date.now()
-    const elapsed = now - this.lastSuggestionAt
-    if (elapsed < this.minSuggestionGapMs) {
-      const wait = this.minSuggestionGapMs - elapsed
-      console.log(`[session] maybeTrigger defer: rate-limit, retry in ${wait}ms`)
+    const sinceCompleted = now - this.lastSuggestionCompletedAt
+    if (this.lastSuggestionCompletedAt > 0 && sinceCompleted < this.cooldownAfterCompletedMs) {
+      const wait = this.cooldownAfterCompletedMs - sinceCompleted
+      console.log(`[session] maybeTrigger defer: cooldown, retry in ${wait}ms`)
       setTimeout(() => this.maybeTriggerSuggestion(), wait)
       return
     }
@@ -280,10 +332,7 @@ export class SessionManager {
     this.llm.cancelInflight()
     this.suggestionInFlight = false
     this.pendingTrigger = false
-    if (this.patientFallbackTimer) {
-      clearTimeout(this.patientFallbackTimer)
-      this.patientFallbackTimer = null
-    }
+    this.cancelSilenceTimer()
     this.lastSuggestionAt = Date.now()
     this.suggestionInFlight = true
     void this.llm.requestSuggestion(this.transcript)
@@ -381,7 +430,8 @@ export class SessionManager {
             baseURL: summaryBaseUrl,
             transcript: this.transcript,
             meLabel: settings.speakerLabelMe,
-            themLabel: settings.speakerLabelThem
+            themLabel: settings.speakerLabelThem,
+            language: settings.language
           })
           const paths = await saveSummary(callId, summaryMd)
           artifacts.summaryTxtPath = paths.txt
@@ -400,6 +450,9 @@ export class SessionManager {
     this.salesStt?.stop()
     this.patientStt?.stop()
     this.llm?.cancelInflight()
+    this.cancelSilenceTimer()
+    this.suggestionInFlight = false
+    this.pendingTrigger = false
     this.salesStt = null
     this.patientStt = null
     this.llm = null

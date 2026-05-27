@@ -6,6 +6,8 @@ type ClaudeOptions = {
   apiKey: string
   model: string
   systemPrompt: string
+  /** Conversation language preference — drives the "match language" rule. */
+  language?: 'multi' | 'en' | 'hi'
 }
 
 export class ClaudeSuggestionClient extends EventEmitter {
@@ -38,7 +40,15 @@ export class ClaudeSuggestionClient extends EventEmitter {
       .join('\n')
 
     const suggestionId = `sug-${Date.now()}`
-    const triggerId = recent[recent.length - 1]?.id ?? ''
+    // Trigger should be the patient utterance that prompted this suggestion —
+    // NOT just the last segment, which could be a sales (own) utterance that
+    // came in between the patient question and this LLM call. Mislabelling
+    // the trigger makes the Q+A pair show "You asked" instead of "Patient
+    // asked" in the overlay.
+    const lastPatientFinal = [...recent]
+      .reverse()
+      .find((s) => s.isFinal && s.speaker === 'patient')
+    const triggerId = lastPatientFinal?.id ?? recent[recent.length - 1]?.id ?? ''
 
     const initial: Suggestion = {
       id: suggestionId,
@@ -61,7 +71,7 @@ export class ClaudeSuggestionClient extends EventEmitter {
           messages: [
             {
               role: 'user',
-              content: `Recent conversation (most recent at bottom):\n\n${conversation}\n\nWrite the next reply the user should say to the other person. Rules:\n- Output ONLY the spoken reply, nothing else.\n- No preamble like "You could say..." or "Here's the reply".\n- No meta-commentary, system notes, logs, or markdown formatting.\n- No code blocks or technical output unless the other person literally asked for code.\n- Match the language and tone of the conversation (Hindi / English / Hinglish).\n- Keep it conversational and concise (1-3 sentences) unless a detailed answer was explicitly asked for.`
+              content: `Recent conversation (most recent at bottom):\n\n${conversation}\n\nWrite the next reply the user should say to the other person. Rules:\n- Output ONLY the spoken reply, nothing else.\n- No preamble like "You could say..." or "Here's the reply".\n- No meta-commentary, system notes, logs, or markdown formatting.\n- No code blocks or technical output unless the other person literally asked for code.\n- ${languageRule(this.opts.language)}\n- Keep it conversational and concise (1-3 sentences) unless a detailed answer was explicitly asked for.`
             }
           ]
         },
@@ -103,4 +113,21 @@ export class ClaudeSuggestionClient extends EventEmitter {
       this.inflight = null
     }
   }
+}
+
+/**
+ * Build the "match language" rule injected into every suggestion request.
+ * When the user has picked English-only we explicitly tell the model not
+ * to use Hindi / Hinglish — otherwise the model would mirror code-switching
+ * even when the user wants strictly English replies.
+ */
+function languageRule(language: 'multi' | 'en' | 'hi' | undefined): string {
+  if (language === 'en') {
+    return 'Reply in standard English ONLY. Do not use Hindi or Hinglish, even if the other person uses them. Match the tone of the conversation.'
+  }
+  if (language === 'hi') {
+    return 'Reply in Hindi (Devanagari script). Match the tone of the conversation.'
+  }
+  // 'multi' or unset — natural mirroring.
+  return 'Match the language and tone of the conversation (Hindi / English / Hinglish).'
 }

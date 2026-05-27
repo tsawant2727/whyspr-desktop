@@ -26,7 +26,10 @@ export class DeepgramStreamingClient extends EventEmitter {
             ? { language: 'multi', model: 'nova-3' }
             : this.opts.language === 'hi'
               ? { language: 'hi', model: 'nova-2' }
-              : { language: 'en-IN', model: 'nova-3' }
+              : // 'en' → en-US (standard English). Was 'en-IN' previously,
+                // which biased recognition toward Indian-English phonemes
+                // and occasionally let Hindi words leak through.
+                { language: 'en-US', model: 'nova-3' }
 
         this.connection = deepgram.listen.live({
           ...langConfig,
