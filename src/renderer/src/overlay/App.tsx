@@ -9,6 +9,7 @@ import { BRAND } from '../../../shared/branding'
 import { startAudioCapture, type AudioCaptureHandle } from '../audio-capture'
 import { LicenseBanner } from './LicenseBanner'
 import { PlaybookDrawer } from './PlaybookDrawer'
+import { UpdateBanner } from './UpdateBanner'
 
 /**
  * A Q+A pair: the transcript snippet that triggered the AI, paired with
@@ -56,6 +57,7 @@ export default function App(): JSX.Element {
   const [showTranscript, setShowTranscript] = useState(false)
   const [showNotes, setShowNotes] = useState(false)
   const [showPlaybook, setShowPlaybook] = useState(false)
+  const [appVersion, setAppVersion] = useState<string>('0.0.0')
   const [notesDraft, setNotesDraft] = useState('')
   const [transcript, setTranscript] = useState<TranscriptSegment[]>([])
   const [interim, setInterim] = useState<TranscriptSegment | null>(null)
@@ -81,6 +83,9 @@ export default function App(): JSX.Element {
       if (s?.featureShowTranscript) setShowTranscript(true)
       setNotesDraft(s?.userNotes ?? '')
     })
+    // Read the current app version once — used by the update-available banner
+    // to compare against the latest version reported by the heartbeat.
+    void window.api.app.version().then(setAppVersion)
 
     const off1 = window.api.on.transcript((seg) => {
       if (seg.isFinal) {
@@ -275,6 +280,13 @@ export default function App(): JSX.Element {
   return (
     <div className="h-full w-full p-3">
       <div className="relative h-full w-full flex flex-col rounded-2xl bg-panel backdrop-blur-xl border border-white/10 shadow-2xl overflow-hidden">
+        <UpdateBanner
+          currentVersion={appVersion}
+          dismissedVersion={settings?.dismissedUpdateVersion ?? ''}
+          onDismiss={(version) =>
+            void window.api.settings.set({ dismissedUpdateVersion: version })
+          }
+        />
         <LicenseBanner />
         <header className="draggable flex items-center justify-between px-5 py-3 border-b border-white/10">
           <div className="flex items-center gap-2.5">

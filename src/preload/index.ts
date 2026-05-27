@@ -51,6 +51,10 @@ const api = {
     chooseFolder: (): Promise<{ canceled: boolean; path?: string }> =>
       ipcRenderer.invoke('dialog:choose-folder')
   },
+  app: {
+    /** Current desktop app version from package.json. */
+    version: (): Promise<string> => ipcRenderer.invoke('app:version')
+  },
   // Whyspr backend (login, license state, heartbeat refresh)
   whyspr: {
     login: (

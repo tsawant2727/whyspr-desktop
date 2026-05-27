@@ -47,6 +47,11 @@ export type AppSettings = {
   // Which playbook to load by default when a session starts. Empty = first
   // playbook in the list, or none if the list is empty.
   defaultPlaybookId: string
+  // The most recent version the user dismissed the "Update available" banner
+  // for. While this matches the latest version on the server, the banner
+  // stays hidden. When the server publishes a NEWER version, the banner
+  // returns. Empty = never dismissed anything.
+  dismissedUpdateVersion: string
 }
 
 export type TranscriptSegment = {
@@ -130,7 +135,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // Seed with the CME TeleConsultation playbook so first-time users see a
   // realistic example. They can edit / delete it from Settings.
   playbooks: DEFAULT_PLAYBOOKS,
-  defaultPlaybookId: DEFAULT_TELECONSULTATION_PLAYBOOK.id
+  defaultPlaybookId: DEFAULT_TELECONSULTATION_PLAYBOOK.id,
+  dismissedUpdateVersion: ''
 }
 
 export type CallArtifacts = {

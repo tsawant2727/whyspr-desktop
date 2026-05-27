@@ -163,6 +163,8 @@ function registerIpc(): void {
   })
   ipcMain.handle('storage:get-recordings-dir', () => getRecordingsDir())
 
+  ipcMain.handle('app:version', () => app.getVersion())
+
   ipcMain.handle('dialog:choose-folder', async () => {
     const result = await dialog.showOpenDialog({
       properties: ['openDirectory', 'createDirectory'],
@@ -214,6 +216,8 @@ function hideOverlay(): void {
 
 function applyRouting(state: AppState | null): void {
   if (!currentSession()) {
+    // Signed out — stop anything in flight so mic/recording doesn't linger.
+    if (session.isActive()) session.stop()
     hideOverlay()
     closeBlockedWindow()
     openLoginWindow()
@@ -223,11 +227,20 @@ function applyRouting(state: AppState | null): void {
   closeLoginWindow()
 
   if (state && !state.allowsAppAccess) {
+    // License blocked (expired / cancelled / suspended / no_license).
+    // Stop the active session immediately — otherwise the mic + recording +
+    // STT + LLM would keep running silently behind the blocked window.
+    if (session.isActive()) {
+      // eslint-disable-next-line no-console
+      console.log('[whyspr] license blocked — stopping active session')
+      session.stop()
+    }
     hideOverlay()
     openBlockedWindow()
     return
   }
   if (state && state.requiresUpdate) {
+    if (session.isActive()) session.stop()
     hideOverlay()
     openBlockedWindow()
     return

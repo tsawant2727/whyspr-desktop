@@ -8,7 +8,9 @@ import { useEffect, useState } from 'react'
 import { BRAND } from '@shared/branding'
 import type { AuthAndState } from '@shared/license'
 
-const TRIAL_BANNER_DAYS = 7
+// Was 7 — but a 7-day trial means the banner showed from day 1, which
+// felt like a constant nag. Now only the final stretch triggers it.
+const TRIAL_BANNER_DAYS = 3
 
 export function LicenseBanner(): JSX.Element | null {
   const [snap, setSnap] = useState<AuthAndState | null>(null)
