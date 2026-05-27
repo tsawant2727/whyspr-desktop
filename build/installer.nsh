@@ -1,40 +1,74 @@
 ; Custom NSIS hooks for the Whispy Windows installer + uninstaller.
 ;
-; Why this file exists:
-;   electron-builder's default _CHECK_APP_RUNNING tries to taskkill the app
-;   but only once, with a single retry, and only for processes owned by the
-;   current user. On real machines we've seen it fail to close Electron
-;   helper processes in time, after which the installer falls back to a
-;   "Whispy can't be closed, please close it manually" dialog with no
-;   obvious way out.
+; Goal: the new installer must succeed unconditionally. Past attempts
+; failed in two ways:
 ;
-; What this does:
-;   Overriding `customCheckAppRunning` REPLACES electron-builder's default
-;   check entirely (see allowOnlyOneInstallerInstance.nsh: CHECK_APP_RUNNING
-;   dispatches to customCheckAppRunning when defined). The replacement runs
-;   in both the installer (when upgrading over an existing install) AND
-;   the uninstaller (when the user picks "Uninstall Whispy" from the
-;   Start Menu / Apps & features).
+;   1. The taskkill only targeted "Whispy.exe" — users still on the
+;      pre-rename build (which shipped as "Whyspr.exe") were untouched
+;      so the file lock survived.
 ;
-;   We do three passes with increasing aggression, then wait for file
-;   handles to release. No user prompt — by the time we're here the user
-;   already accepted the install/uninstall, asking again helps nobody.
+;   2. electron-builder's `uninstallOldVersion` step silently invokes
+;      the OLD uninstaller binary, which has its OWN running-app check
+;      built from the unfixed template. Even with the new installer's
+;      check passing cleanly, the old uninstaller could still get in
+;      the way.
+;
+; Strategy:
+;   - Define a single KillAllWhispy macro that taskkills BOTH executable
+;     names via two independent methods (taskkill + PowerShell). Call it
+;     from customInit, customCheckAppRunning AND customUnInstall so every
+;     entry point cleans up.
+;   - In customInit, wipe the old uninstall-registry key so the new
+;     installer's `uninstallOldVersion` step finds nothing to run. This
+;     skips the broken old uninstaller entirely; orphan files in the old
+;     install dir (if any) get overwritten when the new install lands in
+;     the same directory.
+
+!macro KillAllWhispy
+  ; taskkill for the current executable name.
+  nsExec::Exec '"$SYSDIR\cmd.exe" /c taskkill /F /T /IM "Whispy.exe"'
+  ; taskkill for the legacy pre-rename executable name.
+  nsExec::Exec '"$SYSDIR\cmd.exe" /c taskkill /F /T /IM "Whyspr.exe"'
+  ; PowerShell as a second method — Stop-Process -Force handles edge
+  ; cases where taskkill silently fails (process owned by another
+  ; security context, helper respawning, etc).
+  nsExec::Exec '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "Get-Process Whispy,Whyspr -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"'
+!macroend
+
+!macro customInit
+  ; Pass 1: early kill, before electron-builder's own checks fire.
+  !insertmacro KillAllWhispy
+  Sleep 1500
+  !insertmacro KillAllWhispy
+  Sleep 500
+
+  ; Wipe the previous version's uninstall registry entries so the new
+  ; installer's `uninstallOldVersion` step finds nothing to invoke and
+  ; we never trigger the broken old uninstaller. The new install will
+  ; overwrite files in place.
+  ;
+  ; The key path uses ${UNINSTALL_APP_KEY} which electron-builder defines
+  ; from the appId (com.whyspr.app). Both HKCU (per-user) and HKLM (per-
+  ; machine) variants are wiped because we don't know which mode the
+  ; legacy install used.
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}"
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}"
+!macroend
 
 !macro customCheckAppRunning
-  DetailPrint "Closing any running Whispy instance..."
+  ; REPLACES electron-builder's default running-app check (see
+  ; allowOnlyOneInstallerInstance.nsh: CHECK_APP_RUNNING dispatches to
+  ; this macro when defined). Runs in BOTH installer and uninstaller.
+  ; No user prompt — by now the user already accepted the install.
 
-  ; Pass 1: graceful taskkill (no /F). Gives Electron a chance to flush
-  ; renderer state before being forced down.
-  nsExec::Exec '"$SYSDIR\cmd.exe" /c taskkill /T /IM "${APP_EXECUTABLE_FILENAME}"'
-  Sleep 1200
+  DetailPrint "Closing any running Whispy / Whyspr instances..."
 
-  ; Pass 2: force kill, including the whole process tree (main + GPU /
-  ; renderer / utility helpers).
-  nsExec::Exec '"$SYSDIR\cmd.exe" /c taskkill /F /T /IM "${APP_EXECUTABLE_FILENAME}"'
-  Sleep 1200
-
-  ; Pass 3: belt-and-braces. If any helper respawned in the ~2 seconds
-  ; since pass 2, kill it again.
-  nsExec::Exec '"$SYSDIR\cmd.exe" /c taskkill /F /T /IM "${APP_EXECUTABLE_FILENAME}"'
+  ; Three passes, ~1.5s sleep between each, to handle helper-process
+  ; respawn and slow file-handle release.
+  !insertmacro KillAllWhispy
+  Sleep 1500
+  !insertmacro KillAllWhispy
+  Sleep 1500
+  !insertmacro KillAllWhispy
   Sleep 1500
 !macroend
