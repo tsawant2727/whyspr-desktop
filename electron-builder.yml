@@ -1,5 +1,5 @@
 appId: com.whyspr.app
-productName: Whyspr
+productName: Whispy
 directories:
   buildResources: build
 files:
@@ -18,9 +18,9 @@ mac:
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
-    NSMicrophoneUsageDescription: 'Whyspr needs microphone access to transcribe your voice during meetings.'
+    NSMicrophoneUsageDescription: 'Whispy needs microphone access to transcribe your voice during meetings.'
     NSCameraUsageDescription: 'Not used; required by Electron screen capture.'
-    NSScreenCaptureUsageDescription: 'Whyspr captures system audio to transcribe the other side of your meeting.'
+    NSScreenCaptureUsageDescription: 'Whispy captures system audio to transcribe the other side of your meeting.'
 win:
   target:
     - target: nsis

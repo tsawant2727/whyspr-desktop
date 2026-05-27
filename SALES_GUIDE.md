@@ -1,4 +1,4 @@
-# Whyspr — Quick Start Guide
+# Whispy — Quick Start Guide
 
 Yeh app aapke TC follow-up calls me real-time AI suggestions deta hai. Patient kuch puchhe, AI turant ek reply suggest karega jo aap apne style me bol sakte ho.
 
@@ -7,21 +7,21 @@ Yeh app aapke TC follow-up calls me real-time AI suggestions deta hai. Patient k
 ### Step 1: Install karo
 
 **Mac users:**
-1. `Whyspr.dmg` file download karo (admin se mile)
+1. `Whispy.dmg` file download karo (admin se mile)
 2. Double-click karke open karo
 3. App icon ko Applications folder me drag karo
 4. **⚠️ IMPORTANT (unsigned build fix):** Terminal kholo (Cmd+Space → "Terminal" type karo → Enter), aur yeh command paste karke Enter:
    ```bash
-   xattr -cr "/Applications/Whyspr.app"
+   xattr -cr "/Applications/Whispy.app"
    ```
    Yeh Apple ki "damaged" wali fake error hata deta hai (yeh isliye aati hai kyunki app abhi Apple-signed nahi hai)
-5. Applications folder se Whyspr launch karo
+5. Applications folder se Whispy launch karo
 6. Agar phir bhi "unidentified developer" warning aaye:
    - Right-click app → **Open** → confirm dialog me **Open** click karo, OR
    - System Settings → Privacy & Security → niche scroll karke "Open Anyway" click karo
 
 **Windows users:**
-1. `Whyspr Setup.exe` download karo
+1. `Whispy Setup.exe` download karo
 2. Double-click karo
 3. Agar Windows SmartScreen warning aaye → **More info** → **Run anyway**
 4. Install wizard complete karo → Start menu se launch
@@ -56,7 +56,7 @@ Settings window band kar do — wapas overlay pe aa jao.
 ## Har call ke pehle (10 seconds)
 
 1. Zoom/Google Meet open karo, patient ka link join karo (ya hosting kar rahe ho to start karo)
-2. Whyspr overlay window screen ke top-right me dikhega (agar nahi to system tray/menu bar me icon dhundo → **Show Overlay**)
+2. Whispy overlay window screen ke top-right me dikhega (agar nahi to system tray/menu bar me icon dhundo → **Show Overlay**)
 3. Overlay me **Start** button click karo
 4. **Screen Sharing dialog aayega** — yeh sirf audio capture ke liye hai, koi screen actually share nahi hogi (overlay automatically hide rehta hai patient se):
    - **Mac:** Native picker me apni screen select karo → **Share** click karo
@@ -91,7 +91,7 @@ Ab ready ho. Call shuru karo normally.
 
 ### "System audio not captured" error
 
-**Mac:** System Settings → Privacy & Security → Screen & System Audio Recording → Whyspr ko enable karo, phir app **quit karke restart** karo (sirf window close mat karo, Cmd+Q).
+**Mac:** System Settings → Privacy & Security → Screen & System Audio Recording → Whispy ko enable karo, phir app **quit karke restart** karo (sirf window close mat karo, Cmd+Q).
 
 **Windows:** Screen share dialog me "Share system audio" checkbox missed kiya hoga — Stop karke phir Start karo, is baar checkbox enable karo.
 
@@ -107,7 +107,7 @@ Internet check karo. AI ko Anthropic ke server tak request bhejni hoti hai, slow
 
 ### Overlay window kaha gaya?
 
-System tray (Windows) ya menu bar (Mac top-right) me Whyspr icon dhundo → click → **Show Overlay**
+System tray (Windows) ya menu bar (Mac top-right) me Whispy icon dhundo → click → **Show Overlay**
 
 ### App band karna hai pura
 

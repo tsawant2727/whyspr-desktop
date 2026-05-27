@@ -1,4 +1,4 @@
-# Whyspr
+# Whispy
 
 Real-time AI sales copilot for medical TC (teleconsultation) follow-up calls. Listens to the call, transcribes both sides, and suggests live replies the sales rep can say back to the patient. Like Parakeet AI, but trained for CureMeAbroad's medical-tourism sales playbook.
 

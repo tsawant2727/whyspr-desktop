@@ -68,9 +68,9 @@ export default function App(): JSX.Element {
   if (mode.kind === 'cant_reach') {
     return (
       <Shell>
-        <Heading icon="📡" title="Couldn't reach Whyspr" />
+        <Heading icon="📡" title="Couldn't reach Whispy" />
         <p className="text-sm text-white/70 mb-3">
-          We can&apos;t talk to the Whyspr server right now. Check your internet
+          We can&apos;t talk to the Whispy server right now. Check your internet
           connection and try again.
         </p>
         {mode.error && (
@@ -201,13 +201,13 @@ const COPY = {
   expired: {
     icon: '⏰',
     title: 'Your subscription has expired',
-    body: 'Renew to continue using Whyspr.',
+    body: 'Renew to continue using Whispy.',
     primaryCta: 'Renew subscription →'
   },
   cancelled: {
     icon: '🛑',
     title: 'Subscription cancelled',
-    body: 'Reactivate from your dashboard to keep using Whyspr.',
+    body: 'Reactivate from your dashboard to keep using Whispy.',
     primaryCta: 'Reactivate →'
   },
   paused: {

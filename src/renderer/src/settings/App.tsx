@@ -179,7 +179,7 @@ export default function App(): JSX.Element {
         <section className="space-y-5">
           <div>
             <h2 className="text-sm font-semibold uppercase tracking-wider text-white/60">
-              Run Whyspr for ₹0
+              Run Whispy for ₹0
             </h2>
             <p className="text-xs text-white/50 mt-1">
               Use free-tier providers instead of paid. Quality almost same, cost zero.

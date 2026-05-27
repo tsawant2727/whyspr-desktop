@@ -81,7 +81,7 @@ export async function api<T = unknown>(
       message:
         err?.name === 'AbortError'
           ? 'The request took too long. Check your internet connection.'
-          : `Could not reach Whyspr server. Check your internet connection.`,
+          : `Could not reach Whispy server. Check your internet connection.`,
       body: null
     }
   } finally {

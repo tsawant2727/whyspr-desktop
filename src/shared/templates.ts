@@ -278,7 +278,7 @@ DETECT THE QUESTION TYPE AND RESPOND ACCORDINGLY:
 
 ═══ CUSTOMIZE THIS PROMPT WITH ═══
 Paste your resume, target role, company name, and key projects below this line.
-Whyspr will use these to tailor every answer.
+Whispy will use these to tailor every answer.
 
 ---
 CANDIDATE BACKGROUND (fill this in):
