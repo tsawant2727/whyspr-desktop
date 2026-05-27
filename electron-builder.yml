@@ -28,6 +28,11 @@ win:
     - target: nsis
       arch:
         - x64
+nsis:
+  # See build/installer.nsh — adds customInit hook that taskkills any
+  # running Whispy process tree before the install section starts, so the
+  # installer never falls back to the "please close manually" dialog.
+  include: build/installer.nsh
 linux:
   category: Office
   target:
