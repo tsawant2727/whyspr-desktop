@@ -1,6 +1,6 @@
 {
   "name": "whispy",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Whispy — real-time AI copilot for any meeting",
   "main": "out/main/index.js",
   "author": "CureMeAbroad",
