@@ -13,6 +13,7 @@ asarUnpack:
   - resources/**
 mac:
   category: public.app-category.business
+  icon: build/icon.icns
   target:
     - dmg
   entitlements: build/entitlements.mac.plist
@@ -22,6 +23,7 @@ mac:
     NSCameraUsageDescription: 'Not used; required by Electron screen capture.'
     NSScreenCaptureUsageDescription: 'Whispy captures system audio to transcribe the other side of your meeting.'
 win:
+  icon: build/icon.ico
   target:
     - target: nsis
       arch:
