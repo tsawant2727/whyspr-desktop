@@ -826,17 +826,6 @@ export default function App(): JSX.Element {
 
         {activeSection === 'prompt' && (
         <section className="space-y-8">
-          <DynamicVariablesEditor
-            systemPrompt={settings.systemPrompt}
-            variables={settings.dynamicVariables}
-            onChange={(next) => update('dynamicVariables', next)}
-          />
-
-          <PatientContextEditor
-            value={settings.patientContext}
-            onChange={(next) => update('patientContext', next)}
-          />
-
           <div className="space-y-2">
             <h2 className="text-sm font-semibold uppercase tracking-wider text-white/60">
               Main prompt (template)
@@ -859,6 +848,17 @@ export default function App(): JSX.Element {
               ~{settings.systemPrompt.length.toLocaleString()} characters
             </div>
           </div>
+
+          <DynamicVariablesEditor
+            systemPrompt={settings.systemPrompt}
+            variables={settings.dynamicVariables}
+            onChange={(next) => update('dynamicVariables', next)}
+          />
+
+          <PatientContextEditor
+            value={settings.patientContext}
+            onChange={(next) => update('patientContext', next)}
+          />
         </section>
         )}
         </div>
