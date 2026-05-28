@@ -16,6 +16,16 @@ export type AppSettings = {
   customApiKey: string // optional — Ollama doesn't need one, cloud-compat APIs do
   customModel: string // free-text model id, e.g. llama3.1:8b
   systemPrompt: string
+  // Per-call dynamic variables. Used to fill {{KEY}} placeholders inside
+  // systemPrompt + patientContext before sending to the LLM. Edited from
+  // the Settings → Prompt screen (and, eventually, auto-populated by the
+  // team-RAG lookup_lead tool when team-managed mode lands).
+  dynamicVariables: Record<string, string>
+  // Optional short free-text description of THIS specific patient / client
+  // (history, budget signal, family dynamics, prior agency contact, etc.).
+  // Injected as an "ABOUT THIS PATIENT" section AFTER the main prompt rules
+  // and BEFORE the transcript window. Cap is enforced in the UI at 500 chars.
+  patientContext: string
   language: 'multi' | 'en' | 'hi'
   llmModel: string // Anthropic model id when llmProvider === 'anthropic'
   openaiModel: string // OpenAI model id when llmProvider === 'openai'
@@ -116,6 +126,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   customApiKey: 'ollama',
   customModel: 'llama3.1:8b',
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
+  dynamicVariables: {},
+  patientContext: '',
   language: 'multi',
   llmModel: 'claude-haiku-4-5-20251001',
   openaiModel: 'gpt-4o-mini',

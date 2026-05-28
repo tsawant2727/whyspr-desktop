@@ -13,6 +13,7 @@ import {
   getRecordingsDir
 } from './storage/recordings'
 import { TranscriptSegment, Suggestion, CallArtifacts } from '../shared/types'
+import { assembleSystemPrompt } from '../shared/prompt'
 
 const SAMPLE_RATE = 16000
 
@@ -148,11 +149,19 @@ export class SessionManager {
     console.log(`[session] stt provider: ${settings.sttProvider}`)
 
     if (settings.featureLiveSuggestions) {
+      // Substitute {{...}} placeholders + append patient context. Done here
+      // (at session start) rather than per-suggestion so a typo in the
+      // template fails loud once, not on every fire.
+      const finalSystemPrompt = assembleSystemPrompt({
+        template: settings.systemPrompt,
+        vars: settings.dynamicVariables ?? {},
+        patientContext: settings.patientContext
+      })
       if (settings.llmProvider === 'custom') {
         this.llm = new OpenAISuggestionClient({
           apiKey: settings.customApiKey,
           model: settings.customModel,
-          systemPrompt: settings.systemPrompt,
+          systemPrompt: finalSystemPrompt,
           baseURL: settings.customBaseUrl,
           language: settings.language
         })
@@ -160,14 +169,14 @@ export class SessionManager {
         this.llm = new OpenAISuggestionClient({
           apiKey: settings.openaiApiKey,
           model: settings.openaiModel,
-          systemPrompt: settings.systemPrompt,
+          systemPrompt: finalSystemPrompt,
           language: settings.language
         })
       } else {
         this.llm = new ClaudeSuggestionClient({
           apiKey: settings.anthropicApiKey,
           model: settings.llmModel,
-          systemPrompt: settings.systemPrompt,
+          systemPrompt: finalSystemPrompt,
           language: settings.language
         })
       }

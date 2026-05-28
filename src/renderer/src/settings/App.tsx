@@ -9,6 +9,7 @@ import {
   makePlaybookId,
   totalStepsInPlaybook
 } from '../../../shared/playbooks'
+import { detectPlaceholders } from '../../../shared/prompt'
 
 type SectionId =
   | 'essentials'
@@ -824,27 +825,247 @@ export default function App(): JSX.Element {
         )}
 
         {activeSection === 'prompt' && (
-        <section className="space-y-2">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-white/60">
-            System Prompt
-          </h2>
-          <p className="text-xs text-white/50">
-            The full instruction set the AI uses for every suggestion. Paste objection handling
-            scripts, product details, FAQs, tone guidelines — anything you want the AI to know.
-          </p>
-          <textarea
-            value={settings.systemPrompt}
-            onChange={(e) => update('systemPrompt', e.target.value)}
-            rows={22}
-            className="w-full font-mono text-xs bg-white/5 border border-white/10 rounded-lg p-4 focus:border-accent outline-none leading-relaxed"
+        <section className="space-y-8">
+          <DynamicVariablesEditor
+            systemPrompt={settings.systemPrompt}
+            variables={settings.dynamicVariables}
+            onChange={(next) => update('dynamicVariables', next)}
           />
-          <div className="text-xs text-white/40">
-            ~{settings.systemPrompt.length.toLocaleString()} characters
+
+          <PatientContextEditor
+            value={settings.patientContext}
+            onChange={(next) => update('patientContext', next)}
+          />
+
+          <div className="space-y-2">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-white/60">
+              Main prompt (template)
+            </h2>
+            <p className="text-xs text-white/50">
+              The full instruction set the AI uses for every suggestion. Reference dynamic
+              values with double-curly placeholders like{' '}
+              <code className="px-1 py-0.5 rounded bg-white/10 text-white/80">
+                {'{{PATIENT_FIRST_NAME}}'}
+              </code>
+              .
+            </p>
+            <textarea
+              value={settings.systemPrompt}
+              onChange={(e) => update('systemPrompt', e.target.value)}
+              rows={22}
+              className="w-full font-mono text-xs bg-white/5 border border-white/10 rounded-lg p-4 focus:border-accent outline-none leading-relaxed"
+            />
+            <div className="text-xs text-white/40">
+              ~{settings.systemPrompt.length.toLocaleString()} characters
+            </div>
           </div>
         </section>
         )}
         </div>
       </main>
+    </div>
+  )
+}
+
+// ─── Dynamic variables editor ─────────────────────────────────────────────
+//
+// Edits the `{{KEY}}` placeholder values the LLM gets at session start. Lives
+// at the top of the prompt screen because filling these is the difference
+// between "{{PATIENT_FIRST_NAME}}" appearing literally in suggestions and
+// the patient's actual name being used.
+
+const PATIENT_CONTEXT_MAX = 500
+
+function DynamicVariablesEditor({
+  systemPrompt,
+  variables,
+  onChange
+}: {
+  systemPrompt: string
+  variables: Record<string, string>
+  onChange: (next: Record<string, string>) => void
+}): JSX.Element {
+  // Pull out the rows in stable, alphabetical order so the table doesn't
+  // shuffle every keystroke.
+  const rows = Object.keys(variables).sort()
+
+  function updateKey(oldKey: string, newKey: string): void {
+    if (newKey === oldKey) return
+    const normalized = newKey.toUpperCase().replace(/[^A-Z0-9_]/g, '_')
+    if (!normalized) return
+    const next: Record<string, string> = {}
+    for (const k of Object.keys(variables)) {
+      next[k === oldKey ? normalized : k] = variables[k]
+    }
+    onChange(next)
+  }
+
+  function updateValue(key: string, value: string): void {
+    onChange({ ...variables, [key]: value })
+  }
+
+  function addRow(): void {
+    // Find a free placeholder name like NEW_VAR_1, NEW_VAR_2, …
+    let i = 1
+    while (variables[`NEW_VAR_${i}`] !== undefined) i++
+    onChange({ ...variables, [`NEW_VAR_${i}`]: '' })
+  }
+
+  function removeRow(key: string): void {
+    const next = { ...variables }
+    delete next[key]
+    onChange(next)
+  }
+
+  function detectFromPrompt(): void {
+    const found = detectPlaceholders(systemPrompt)
+    if (found.length === 0) {
+      window.alert(
+        'No {{PLACEHOLDERS}} found in the main prompt yet. Add some like {{PATIENT_FIRST_NAME}} first.'
+      )
+      return
+    }
+    const next: Record<string, string> = { ...variables }
+    let added = 0
+    for (const key of found) {
+      if (next[key] === undefined) {
+        next[key] = ''
+        added += 1
+      }
+    }
+    if (added === 0) {
+      window.alert(`All ${found.length} placeholder(s) already in the table.`)
+      return
+    }
+    onChange(next)
+  }
+
+  return (
+    <div className="space-y-2">
+      <h2 className="text-sm font-semibold uppercase tracking-wider text-white/60">
+        Dynamic variables
+      </h2>
+      <p className="text-xs text-white/50">
+        Filled into{' '}
+        <code className="px-1 py-0.5 rounded bg-white/10 text-white/80">{'{{...}}'}</code>{' '}
+        placeholders in your main prompt before each suggestion. Update the patient name
+        before each call.
+      </p>
+
+      <div className="rounded-lg border border-white/10 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-white/[0.03] text-[10px] uppercase tracking-wider text-white/45">
+            <tr>
+              <th className="text-left px-3 py-2 w-1/3">Placeholder</th>
+              <th className="text-left px-3 py-2">Value</th>
+              <th className="w-10" />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={3} className="px-3 py-4 text-center text-white/40 text-xs">
+                  No variables yet. Click <strong>Auto-detect</strong> below to pull{' '}
+                  <code>{'{{...}}'}</code> placeholders from your prompt.
+                </td>
+              </tr>
+            )}
+            {rows.map((key) => (
+              <tr key={key} className="border-t border-white/5">
+                <td className="px-2 py-1.5">
+                  <div className="flex items-center gap-1 font-mono text-xs text-white/85">
+                    <span className="text-white/40 select-none">{'{{'}</span>
+                    <input
+                      type="text"
+                      value={key}
+                      onChange={(e) => updateKey(key, e.target.value)}
+                      className="flex-1 bg-transparent focus:bg-white/5 rounded px-1 py-1 outline-none uppercase"
+                      spellCheck={false}
+                    />
+                    <span className="text-white/40 select-none">{'}}'}</span>
+                  </div>
+                </td>
+                <td className="px-2 py-1.5">
+                  <input
+                    type="text"
+                    value={variables[key]}
+                    onChange={(e) => updateValue(key, e.target.value)}
+                    placeholder="(leave empty to omit)"
+                    className="w-full bg-white/5 border border-white/10 rounded px-2 py-1 text-xs focus:border-accent outline-none"
+                  />
+                </td>
+                <td className="px-2 py-1.5 text-right">
+                  <button
+                    onClick={() => removeRow(key)}
+                    title="Remove"
+                    className="text-white/40 hover:text-red-400 text-base leading-none px-1"
+                  >
+                    ×
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <button
+          onClick={addRow}
+          className="text-xs px-2.5 py-1 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 text-white/80"
+        >
+          + Add variable
+        </button>
+        <button
+          onClick={detectFromPrompt}
+          className="text-xs px-2.5 py-1 rounded-md bg-accent/15 hover:bg-accent/25 border border-accent/40 text-white"
+        >
+          ↻ Auto-detect from prompt
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ─── Patient / client context editor ──────────────────────────────────────
+
+function PatientContextEditor({
+  value,
+  onChange
+}: {
+  value: string
+  onChange: (next: string) => void
+}): JSX.Element {
+  const length = value.length
+  const overLimit = length > PATIENT_CONTEXT_MAX
+
+  return (
+    <div className="space-y-2">
+      <h2 className="text-sm font-semibold uppercase tracking-wider text-white/60">
+        Patient / client context{' '}
+        <span className="text-white/35 text-xs normal-case font-normal tracking-normal">
+          (optional)
+        </span>
+      </h2>
+      <p className="text-xs text-white/50">
+        Brief notes about THIS specific patient — prior surgeries, budget signal, family
+        dynamics, prior agency contact, anything that helps the AI tailor the next reply.
+        Update before each call.
+      </p>
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={5}
+        maxLength={PATIENT_CONTEXT_MAX + 50 /* small grace so paste isn't silently truncated; UI warns */}
+        placeholder="e.g. 45yo female, mother of 3. Wife is deciding but husband approves the final call. Budget signal $5K-7K. Spoke to 2 other agencies. JCI accreditation matters — sister had a bad outcome in Mexico last year."
+        className={`w-full text-sm bg-white/5 border rounded-lg p-3 focus:border-accent outline-none ${
+          overLimit ? 'border-red-500/60' : 'border-white/10'
+        }`}
+      />
+      <div className={`text-xs ${overLimit ? 'text-red-400' : 'text-white/40'}`}>
+        {length} / {PATIENT_CONTEXT_MAX} chars
+        {overLimit && ' — over the limit, please trim'}
+      </div>
     </div>
   )
 }
