@@ -2,6 +2,7 @@ import { BrowserWindow } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { BRAND } from '../../shared/branding'
+import { lockContentProtection } from './protect'
 
 let settingsWin: BrowserWindow | null = null
 
@@ -26,7 +27,7 @@ export function openSettingsWindow(): BrowserWindow {
   })
 
   // Hide settings window too — API keys and prompt content should never leak via screen share.
-  settingsWin.setContentProtection(true)
+  lockContentProtection(settingsWin)
 
   settingsWin.on('ready-to-show', () => settingsWin?.show())
   settingsWin.on('closed', () => {

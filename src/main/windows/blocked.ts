@@ -2,6 +2,7 @@ import { BrowserWindow, shell } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { BRAND } from '../../shared/branding'
+import { lockContentProtection } from './protect'
 
 let blockedWin: BrowserWindow | null = null
 
@@ -30,7 +31,7 @@ export function openBlockedWindow(): BrowserWindow {
     }
   })
 
-  blockedWin.setContentProtection(true)
+  lockContentProtection(blockedWin)
 
   blockedWin.on('ready-to-show', () => blockedWin?.show())
   blockedWin.on('closed', () => {

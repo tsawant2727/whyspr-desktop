@@ -2,6 +2,7 @@ import { BrowserWindow, screen, shell } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { BRAND } from '../../shared/branding'
+import { lockContentProtection } from './protect'
 
 export function createOverlayWindow(): BrowserWindow {
   const display = screen.getPrimaryDisplay()
@@ -39,7 +40,9 @@ export function createOverlayWindow(): BrowserWindow {
   // Hide overlay from screen sharing / recording / screenshots.
   // macOS: NSWindowSharingNone (invisible to Zoom share, QuickTime, etc.)
   // Windows: WDA_EXCLUDEFROMCAPTURE (Windows 10 2004+)
-  win.setContentProtection(true)
+  // Re-applied on lifecycle events because Electron 32+ on macOS Sequoia
+  // loses the flag on focus/blur/navigation for transparent windows.
+  lockContentProtection(win)
 
   win.on('ready-to-show', () => win.show())
 
